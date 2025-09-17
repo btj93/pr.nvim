@@ -16,12 +16,12 @@ return {
     "nvim-lua/plenary.nvim",
   },
   opts = {},
-  lazy = false,
+  event = "VeryLazy",
   keys = {
     {
       "<leader>gc",
       function()
-        require("pr"):toggle()
+        require("pr").toggle()
       end,
       { desc = "toggle PR comments" },
     },
