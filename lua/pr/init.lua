@@ -427,7 +427,7 @@ function M.make_popup(comment, enter)
 	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, lines)
 
 	popup:map("n", "e", function()
-		local menu = M.make_emoji_menu(comment.reaction_groups)
+		local menu = M.make_emoji_menu(comment.database_id, comment.reaction_groups)
 		menu:mount()
 	end)
 
@@ -526,14 +526,15 @@ function M.make_layout(popups)
 end
 
 ---
----@param reaction_group CommentReactionGroup
+---@param comment_id integer
+---@param reaction_groups CommentReactionGroup[]
 ---@return NuiMenu
-function M.make_emoji_menu(reaction_group)
+function M.make_emoji_menu(comment_id, reaction_groups)
 	local items = {}
 
 	local space_count = 6
 
-	for _, reaction in pairs(reaction_group) do
+	for _, reaction in pairs(reaction_groups) do
 		local count_digits = #tostring(reaction.reactors.totalCount)
 		-- TODO: adjust col based on longest item
 		if count_digits > space_count then
@@ -546,7 +547,15 @@ function M.make_emoji_menu(reaction_group)
 		if reaction.viewerHasReacted then
 			text:set(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount, hl_emoji)
 		end
-		table.insert(items, Menu.item(text, { id = reaction, viewer_has_reacted = reaction.viewerHasReacted }))
+		table.insert(
+			items,
+			Menu.item(text, {
+				id = reaction.content,
+				viewer_has_reacted = reaction.viewerHasReacted,
+				comment_id = comment_id,
+				reactions = reaction.reactors.nodes,
+			})
+		)
 	end
 
 	-- TODO: adjust col based on longest item
@@ -581,7 +590,20 @@ function M.make_emoji_menu(reaction_group)
 			print("CLOSED")
 		end,
 		on_submit = function(item)
-			print("SUBMITTED", vim.inspect(item))
+			print("SUBMITTED", vim.inspect(item.viewer_has_reacted))
+			if item.viewer_has_reacted then
+				for _, reaction in ipairs(item.reactions) do
+					if reaction.user.login == M.git_user then
+						gh.remove_reaction(item.comment_id, reaction.database_id)
+						return
+					end
+				end
+				vim.notify("You have not reacted to this comment yet.")
+			else
+				gh.add_reaction(item.comment_id, item.id)
+			end
+
+			-- TODO: get comment and render again
 		end,
 	})
 
@@ -709,21 +731,23 @@ end
 
 function M.start()
 	M.enabled = true
-	gh.get_comments(vim.schedule_wrap(function(_)
-		vim.api.nvim_exec2(
-			[[augroup PRComment
+	gh.get_git_user(vim.schedule_wrap(function(_)
+		gh.get_comments(vim.schedule_wrap(function(_)
+			vim.api.nvim_exec2(
+				[[augroup PRComment
         autocmd!
         autocmd BufWinEnter,WinNew * lua require("pr").attach()
       augroup end]],
-			{ output = false }
-		)
+				{ output = false }
+			)
 
-		-- attach to all bufs in visible windows
-		for _, win in pairs(vim.api.nvim_list_wins()) do
-			if not M.wins[win] then
-				M.attach(win)
+			-- attach to all bufs in visible windows
+			for _, win in pairs(vim.api.nvim_list_wins()) do
+				if not M.wins[win] then
+					M.attach(win)
+				end
 			end
-		end
+		end))
 	end))
 end
 
@@ -752,6 +776,6 @@ function M.setup(opts)
 end
 
 -- Run setup when the module is loaded
-M.setup()
+-- M.setup()
 
 return M

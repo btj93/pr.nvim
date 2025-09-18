@@ -19,11 +19,17 @@ M.pr_number = 0
 ---
 --- @class CommentReactionGroup
 --- @field content string
---- @field viewer_has_reacted boolean
+--- @field viewerHasReacted boolean
 --- @field reactors CommentReactionReactors
 ---
 --- @class CommentReactionReactors
---- @field total_count integer
+--- @field totalCount integer
+--- @field nodes CommentReactionReactorsNode[]
+---
+--- @class CommentReactionReactorsNode
+--- @field database_id integer
+--- @field content string
+--- @field user string
 ---
 ---@alias Comments table<string, CommentInfo[]>
 ---@type Comments
@@ -189,6 +195,15 @@ function M.get_comments(callback)
                           totalCount
                         }
                       }
+                      reactions(first: 10) {
+                        nodes {
+                          databaseId
+                          content
+                          user {
+                            login
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -268,6 +283,25 @@ function M.get_comments(callback)
 								end
 								file = comment.path
 								local author = comment.author and comment.author.login or "unknown"
+								local reactionGroups = comment.reactionGroups
+
+								local reactions_by_content = {}
+								for _, reaction in ipairs(comment.reactions.nodes) do
+									if not reactions_by_content[reaction.content] then
+										reactions_by_content[reaction.content] = {}
+									end
+
+									table.insert(reactions_by_content[reaction.content], {
+										database_id = reaction.databaseId,
+										content = reaction.content,
+										user = reaction.user.login,
+									})
+								end
+
+								for _, reactionGroup in ipairs(reactionGroups) do
+									reactionGroup.reactors.nodes = reactions_by_content[reactionGroup.content]
+								end
+
 								table.insert(thread, {
 									database_id = comment.databaseId,
 									author = author,
@@ -333,9 +367,9 @@ function M.get_git_user(callback)
 	end
 	Job:new({
 		command = "gh",
-		args = { "api", "api", "user", "-q", ".login" },
+		args = { "api", "user", "-q", ".login" },
 		cmd = "./",
-		on_exit = function(j, return_val)
+		on_exit = vim.schedule_wrap(function(j, return_val)
 			-- vim.notify(vim.inspect(j:result()))
 			if return_val ~= 0 then
 				vim.notify("Error running git user command. Is a git cli installed?")
@@ -349,10 +383,110 @@ function M.get_git_user(callback)
 			end
 
 			M.git_user = t
-			vim.notify(M.git_user)
+			vim.notify("Logged in as " .. M.git_user)
 			callback(M.git_user)
-		end,
+		end),
 	}):start()
+end
+
+---
+---@param comment_id integer
+---@param reaction_key string
+---@param callback function?(data: any)
+function M.add_reaction(comment_id, reaction_key, callback)
+	callback = callback or function(_) end
+
+	local reaction_key_map = {
+		CONFUSED = "confused",
+		EYES = "eyes",
+		HEART = "heart",
+		HOORAY = "hooray",
+		LAUGH = "laugh",
+		ROCKET = "rocket",
+		THUMBS_DOWN = "-1",
+		THUMBS_UP = "+1",
+	}
+
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
+
+		local args = {
+			"api",
+			"--method",
+			"POST",
+			"-H",
+			"Accept: application/vnd.github+json",
+			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id .. "/reactions",
+			"-f",
+			"content=" .. reaction_key_map[reaction_key],
+		}
+		Job:new({
+			command = "gh",
+			args = args,
+			on_exit = function(j, return_val)
+				if return_val ~= 0 then
+					vim.notify("Error running gh add reaction command. Is a gh cli installed?")
+					return
+				end
+
+				local result_json = j:result()
+				local _, t = next(result_json)
+				if not t then
+					vim.notify("No result from gh add reaction command. Is a gh cli installed?")
+					return
+				end
+
+				local data = vim.json.decode(t)
+
+				vim.notify(vim.inspect(data))
+
+				callback(data)
+			end,
+		}):start()
+	end))
+end
+
+function M.remove_reaction(comment_id, reaction_id, callback)
+	callback = callback or function(_) end
+
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
+
+		local args = {
+			"api",
+			"--method",
+			"DELETE",
+			"-H",
+			"Accept: application/vnd.github+json",
+			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id .. "/reactions/" .. reaction_id,
+		}
+		vim.notify(vim.inspect(args))
+		Job:new({
+			command = "gh",
+			args = args,
+			on_exit = function(_, return_val)
+				if return_val ~= 0 then
+					vim.notify("Error running gh remove reaction command. Is a gh cli installed?")
+				end
+
+				callback(return_val ~= 0)
+			end,
+		}):start()
+	end))
 end
 
 function M.clear()
