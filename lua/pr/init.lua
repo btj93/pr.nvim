@@ -3,14 +3,6 @@ local M = {}
 M.enabled = false
 M.bufs = {}
 M.wins = {}
-M.git_root = ""
-M.git_user = ""
---- { owner: string, repo: string }
-M.repo_info = {}
-M.pr_number = 0
-
---- { [file] = { { [author, body, start_line, end_line, reaction_groups] } } }
-M.comments = {}
 
 M.opts = {
 	virtual_text = true,
@@ -49,42 +41,14 @@ local popup_hl = "PRCommentPopup"
 -- Highlight definitions
 local hl_group = "PRDiffHighlights"
 local hl_comment = "PRCommentHL"
+local hl_emoji = "PREmojiLine"
 
 local Popup = require("nui.popup")
 local Layout = require("nui.layout")
 local Menu = require("nui.menu")
+local NuiText = require("nui.text")
 local event = require("nui.utils.autocmd").event
-local Job = require("plenary.job")
-
--- -- A single setup function for signs and highlights
--- function M.setup(opts)
---   M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
---
---   -- vim.fn.sign_define(sign_add, { text = "+", texthl = "DiffAdd" })
---   -- vim.fn.sign_define(sign_del, { text = "-", texthl = "DiffDelete" })
---   vim.fn.sign_define(sign_comment, { text = M.opts.sign, texthl = sign_hl })
---   vim.fn.sign_define(sign_comment_multi_line_start, { text = M.opts.multi_line_sign.start_line, texthl = sign_hl })
---   vim.fn.sign_define(sign_comment_multi_line_connector, { text = M.opts.multi_line_sign.connector, texthl = sign_hl })
---   vim.fn.sign_define(sign_comment_multi_line_end, { text = M.opts.multi_line_sign.end_line, texthl = sign_hl })
---   -- vim.api.nvim_set_hl(0, "DiffAdd", { fg = "Green" })
---   -- vim.api.nvim_set_hl(0, "DiffDelete", { fg = "Red" })
---   vim.api.nvim_set_hl(0, sign_hl, { fg = "LightBlue" })
---   vim.api.nvim_set_hl(0, "PRDiffAdd", { bg = "#40531b" })
---   vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
---   vim.api.nvim_set_hl(0, sign_comment, { fg = "Grey", italic = true })
---   vim.api.nvim_set_hl(0, hl_comment, { bg = "LightBlue" })
---
---   vim.api.nvim_set_hl(0, popup_hl, { fg = "Yellow" })
---
---   M.get_git_root()
---   M.get_git_user()
---   M.get_repo_info()
---   M.get_comments()
---   M.get_pr_number()
--- end
---
--- -- Run setup when the module is loaded
--- M.setup()
+local gh = require("pr.providers.gh")
 
 -- State tracking
 local highlights_active = false
@@ -93,22 +57,6 @@ local comments_active = false
 -- Namespaces and Groups
 local diff_ns_id = vim.api.nvim_create_namespace("PRDiffHighlights")
 local comments_ns_id = vim.api.nvim_create_namespace("PRComments")
-
-function M.check_pr()
-	local branch = vim.fn.systemlist("git rev-parse --abbrev-ref HEAD")[1]
-	local pr_info_cmd = "gh pr view --json url --jq .url"
-	local pr_info = vim.fn.system(pr_info_cmd)
-
-	if vim.v.shell_error == 0 and pr_info ~= "" and pr_info ~= "\n" then
-		vim.api.nvim_echo(
-			{ { "Pull request for branch '" .. branch .. "' is open: " .. pr_info, "InfoMsg" } },
-			true,
-			{}
-		)
-	else
-		vim.api.nvim_echo({ { "No open pull request found for branch '" .. branch .. "'", "WarningMsg" } }, true, {})
-	end
-end
 
 -- Function to clear all the diff highlights for the current buffer
 local function clear_highlights()
@@ -202,270 +150,6 @@ local function clear_comments()
 	vim.api.nvim_echo({ { "PR comments hidden.", "InfoMsg" } }, true, {})
 end
 
--- Helper to get owner/repo from git remote
----
----@param callback function?(owner: string, repo: string)
----@return nil
-function M.get_repo_info(callback)
-	callback = callback or function(_, _) end
-	if M.repo_info.owner and M.repo_info.repo then
-		callback(M.repo_info.owner, M.repo_info.repo)
-		return
-	end
-
-	Job:new({
-		command = "git",
-		args = { "remote", "get-url", "origin" },
-		on_exit = vim.schedule_wrap(function(j, return_val)
-			if return_val ~= 0 then
-				vim.api.nvim_echo(
-					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-					true,
-					{}
-				)
-				return
-			end
-			local result_json = j:result()
-			local _, t = next(result_json)
-			if not t then
-				vim.api.nvim_echo(
-					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-					true,
-					{}
-				)
-				return
-			end
-
-			local remote_url = t
-			-- Match git@github.com:owner/repo.git OR https://github.com/owner/repo.git
-			local owner, repo = remote_url:match("[:/]([^/]+)/([^/]+)%.git$")
-			if not owner then
-				-- Match https://github.com/owner/repo (no .git suffix)
-				owner, repo = remote_url:match("github%.com/([^/]+)/([^/]+)$")
-			end
-			if owner and repo then
-				M.repo_info = { owner = owner, repo = repo }
-				callback(owner, repo)
-				return
-			else
-				vim.api.nvim_echo(
-					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-					true,
-					{}
-				)
-				return
-			end
-		end),
-	}):start()
-end
-
--- Helper to get the current PR number
----
----@param callback function?(pr_number: number)
-function M.get_pr_number(callback)
-	callback = callback or function(_) end
-	if M.pr_number > 0 then
-		callback(M.pr_number)
-		return
-	end
-
-	Job:new({
-		command = "gh",
-		args = { "pr", "view", "--json", "number", "--jq", ".number" },
-		on_exit = vim.schedule_wrap(function(j, return_val)
-			if return_val ~= 0 then
-				vim.api.nvim_echo(
-					{ { "Could not get PR number. Is a PR open for this branch?", "ErrorMsg" } },
-					true,
-					{}
-				)
-				return
-			end
-			local result_json = j:result()
-			local _, t = next(result_json)
-			if not t then
-				vim.api.nvim_echo(
-					{ { "Could not get PR number. Is a PR open for this branch?", "ErrorMsg" } },
-					true,
-					{}
-				)
-				return
-			end
-
-			local pr_number_str = t
-			local pr_number = tonumber(pr_number_str)
-			if pr_number then
-				M.pr_number = pr_number
-				callback(pr_number)
-				return
-			else
-				vim.notify("Could not get PR number. Is a gh cli installed?")
-				return
-			end
-		end),
-	}):start()
-end
-
----
----@param callback function?
-function M.get_comments(callback)
-	callback = callback or function() end
-	if next(M.comments) then
-		callback()
-		return
-	end
-	-- vim.notify(vim.inspect(M.comments))
-
-	-- 1. Get dynamic repository and PR info
-	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
-		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
-			return
-		end
-		M.get_pr_number(vim.schedule_wrap(function(pr_number)
-			if not pr_number then
-				vim.api.nvim_echo(
-					{ { "Could not get PR number. Is a PR open for this branch?", "ErrorMsg" } },
-					true,
-					{}
-				)
-				return
-			end
-			-- 2. Construct the GraphQL query with dynamic data
-			-- https://docs.github.com/en/graphql/reference/objects#pullrequestreviewcomment
-			local query_template = [[
-    query($owner: String!, $name: String!, $prNumber: Int!) {
-      repository(owner: $owner, name: $name) {
-        pullRequest(number: $prNumber) {
-          reviewThreads(first: 100) {
-            edges {
-              node {
-                comments(first: 100) {
-                  edges {
-                    node {
-                      author { login }
-                      body
-                      path
-                      line
-                      startLine
-                      originalLine
-                      originalStartLine
-                      reactionGroups {
-                        content
-                        viewerHasReacted
-                        reactors {
-                          totalCount
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  ]]
-
-			-- 3. Execute the gh api graphql command safely
-			local args = {
-				"api",
-				"graphql",
-				"-F",
-				"owner=" .. owner,
-				"-F",
-				"name=" .. repo,
-				"-F",
-				"prNumber=" .. pr_number,
-				"-f",
-				"query=" .. query_template,
-			}
-			Job:new({
-				command = "gh",
-				args = args,
-				on_exit = function(j, return_val)
-					-- vim.notify(vim.inspect(j:result()))
-					if return_val ~= 0 then
-						vim.notify("Error running gh api graphql command. Is a gh cli installed?")
-						return
-					end
-
-					local result_json = j:result()
-					local _, t = next(result_json)
-					if not t then
-						vim.notify("No result from gh api graphql command. Is a gh cli installed?")
-						return
-					end
-
-					local data = vim.json.decode(t)
-					if
-						not data
-						or not data.data
-						or not data.data.repository
-						or not data.data.repository.pullRequest
-					then
-						vim.notify("Unexpected GraphQL response structure.")
-						return
-					end
-
-					local threads = data.data.repository.pullRequest.reviewThreads.edges
-
-					local comments = {}
-					local thread_count = 0
-
-					for _, thread_edge in ipairs(threads) do
-						local thread = {}
-						local file = ""
-						for _, comment_edge in ipairs(thread_edge.node.comments.edges) do
-							local comment = comment_edge.node
-							-- vim.notify(vim.inspect(comment))
-							if comment.line ~= vim.NIL or comment.originalLine ~= vim.NIL then
-								local line = comment.line
-								if comment.line == vim.NIL then
-									line = comment.originalLine
-								end
-
-								local start_line = comment.startLine
-								if comment.startLine == vim.NIL then
-									if comment.originalStartLine == vim.NIL then
-										start_line = line
-									else
-										start_line = comment.originalStartLine
-									end
-								end
-								file = comment.path
-								local author = comment.author and comment.author.login or "unknown"
-								table.insert(thread, {
-									author = author,
-									body = comment.body,
-									start_line = start_line,
-									end_line = line,
-									reaction_groups = comment.reactionGroups,
-								})
-							end
-						end
-						local c = comments[file] or {}
-						table.insert(c, thread)
-						comments[file] = c
-						thread_count = thread_count + 1
-					end
-
-					M.comments = comments
-
-					-- Add unresolved
-					vim.notify("You have " .. thread_count .. " comment threads")
-					callback()
-				end,
-			}):start()
-		end))
-	end))
-end
-
 ---
 ---@param buf integer?
 function M.draw(buf)
@@ -483,14 +167,14 @@ function M.draw(buf)
 	end
 
 	local comments_placed = 0
-	M.get_git_root(vim.schedule_wrap(function(git_root)
+	gh.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
 		end
 
 		local relative_path = buffer_path:sub(#git_root + 2)
-		local comments = M.comments[relative_path] or {}
+		local comments = gh.comments[relative_path] or {}
 		for _, thread in ipairs(comments) do
 			local c = {}
 			local start_line = 0
@@ -603,66 +287,6 @@ function M.is_valid_buf(buf)
 end
 
 ---
----@param callback function?(git_root: string)
-function M.get_git_root(callback)
-	callback = callback or function(_) end
-	if M.git_root then
-		callback(M.git_root)
-	end
-	Job:new({
-		command = "git",
-		args = { "rev-parse", "--show-toplevel" },
-		on_exit = function(j, return_val)
-			-- vim.notify(vim.inspect(j:result()))
-			if return_val ~= 0 then
-				vim.notify("Error running git rev-parse command. Is a git cli installed?")
-				return
-			end
-			local result_json = j:result()
-			local _, t = next(result_json)
-			if not t then
-				vim.notify("No result from git rev-parse command. Is a git cli installed?")
-				return
-			end
-
-			M.git_root = t
-			callback(M.git_root)
-		end,
-	}):start()
-end
-
----
----@param callback function?(git_user: string)
-function M.get_git_user(callback)
-	callback = callback or function(_) end
-	if M.git_user then
-		callback(M.git_user)
-	end
-	Job:new({
-		command = "gh",
-		args = { "api", "api", "user", "-q", ".login" },
-		cmd = "./",
-		on_exit = function(j, return_val)
-			-- vim.notify(vim.inspect(j:result()))
-			if return_val ~= 0 then
-				vim.notify("Error running git user command. Is a git cli installed?")
-				return
-			end
-			local result_json = j:result()
-			local _, t = next(result_json)
-			if not t then
-				vim.notify("No result from git user command. Is a git cli installed?")
-				return
-			end
-
-			M.git_user = t
-			vim.notify(M.git_user)
-			callback(M.git_user)
-		end,
-	}):start()
-end
-
----
 ---@param win integer?
 function M.attach(win)
 	win = win or vim.api.nvim_get_current_win()
@@ -723,8 +347,8 @@ end
 ---@param relative_path string?
 ---@param line integer?
 function M.popup(relative_path, line)
-	-- TODO: check M.get_comments is done
-	M.get_git_root(vim.schedule_wrap(function(git_root)
+	-- TODO: check gh.get_comments is done
+	gh.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
@@ -739,7 +363,7 @@ function M.popup(relative_path, line)
 		local row, _ = unpack(vim.api.nvim_win_get_cursor(0))
 		line = line or row
 
-		local comments = M.comments[relative_path] or {}
+		local comments = gh.comments[relative_path] or {}
 
 		for _, thread in ipairs(comments) do
 			local _, first_comment = next(thread)
@@ -757,7 +381,7 @@ function M.popup(relative_path, line)
 end
 
 ---
----@param comment {author: string, body: string, start_line: integer, end_line: integer, reaction_groups: {content: string, reactors: {totalCount: integer}, viewerHasReacted: boolean}[]}
+---@param comment CommentInfo
 ---@param enter boolean
 ---@return NuiPopup
 function M.make_popup(comment, enter)
@@ -902,7 +526,7 @@ function M.make_layout(popups)
 end
 
 ---
----@param reaction_group {content: string, reactors: {totalCount: integer}, viewerHasReacted: boolean}[]
+---@param reaction_group CommentReactionGroup
 ---@return NuiMenu
 function M.make_emoji_menu(reaction_group)
 	local items = {}
@@ -918,10 +542,11 @@ function M.make_emoji_menu(reaction_group)
 
 		local sep = string.rep(" ", space_count - count_digits)
 
-		table.insert(
-			items,
-			Menu.item(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount, { id = reaction })
-		)
+		local text = NuiText(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount)
+		if reaction.viewerHasReacted then
+			text:set(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount, hl_emoji)
+		end
+		table.insert(items, Menu.item(text, { id = reaction, viewer_has_reacted = reaction.viewerHasReacted }))
 	end
 
 	-- TODO: adjust col based on longest item
@@ -964,7 +589,7 @@ function M.make_emoji_menu(reaction_group)
 end
 
 ---
----@param reaction_group {content: string, reactors: {totalCount: integer}, viewerHasReacted: boolean}[]
+---@param reaction_group CommentReactionGroup
 ---@return string
 function M.format_reaction(reaction_group)
 	local reactions = {}
@@ -1012,7 +637,7 @@ function M.picker()
 		---@return snacks.picker.finder.Item[]
 		finder = function()
 			local items = {}
-			for file, threads in pairs(M.comments) do
+			for file, threads in pairs(gh.comments) do
 				for _, thread in ipairs(threads) do
 					local _, first = next(thread)
 					if first then
@@ -1065,16 +690,12 @@ end
 function M.stop()
 	M.enabled = false
 	M.wins = {}
-	M.comments = {}
 	for buf, _ in pairs(M.bufs) do
 		vim.api.nvim_buf_clear_namespace(buf, diff_ns_id, 0, -1)
 		vim.api.nvim_buf_clear_namespace(buf, comments_ns_id, 0, -1)
 	end
 	M.bufs = {}
-	M.git_root = ""
-	M.git_user = ""
-	M.repo_info = {}
-	M.pr_number = 0
+	gh.clear()
 	vim.fn.sign_unplace(sign_group)
 end
 
@@ -1088,7 +709,7 @@ end
 
 function M.start()
 	M.enabled = true
-	M.get_comments(vim.schedule_wrap(function()
+	gh.get_comments(vim.schedule_wrap(function(_)
 		vim.api.nvim_exec2(
 			[[augroup PRComment
         autocmd!
@@ -1100,12 +721,6 @@ function M.start()
 		-- attach to all bufs in visible windows
 		for _, win in pairs(vim.api.nvim_list_wins()) do
 			if not M.wins[win] then
-				-- local buf = vim.api.nvim_win_get_buf(win)
-				-- if not M.bufs[buf] then
-				--   M.draw(buf)
-				--   M.wins[win] = true
-				--   M.bufs[buf] = true
-				-- end
 				M.attach(win)
 			end
 		end
@@ -1129,14 +744,10 @@ function M.setup(opts)
 	vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
 	vim.api.nvim_set_hl(0, sign_comment, { fg = "Grey", italic = true })
 	vim.api.nvim_set_hl(0, hl_comment, { bg = "LightBlue" })
+	vim.api.nvim_set_hl(0, hl_emoji, { bg = "#4493f8", fg = "white" })
 
 	vim.api.nvim_set_hl(0, popup_hl, { fg = "Yellow" })
 
-	-- M.get_git_root()
-	-- M.get_git_user()
-	-- M.get_repo_info()
-	-- M.get_pr_number()
-	-- M.get_comments()
 	M.start()
 end
 
