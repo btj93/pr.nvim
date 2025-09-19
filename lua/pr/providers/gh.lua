@@ -9,12 +9,26 @@ M.git_user = ""
 M.repo_info = {}
 M.pr_number = 0
 
+--- @class ReviewThread
+--- @field is_resolved boolean
+--- @field resolved_by string
+--- @field is_outdated boolean
+--- @field is_collapsed boolean
+--- @field viewer_can_reply boolean
+--- @field viewer_can_resolve boolean
+--- @field viewer_can_unresolve boolean
+--- @field comments CommentInfo[]
+
 --- @class CommentInfo
 --- @field database_id integer
 --- @field author string
 --- @field body string
+--- @field published_at string
+--- @field viewer_did_author boolean
 --- @field start_line integer
 --- @field end_line integer
+--- @field viewer_can_update boolean
+--- @field viewer_can_react boolean
 --- @field reaction_groups table<CommentReactionGroup>
 ---
 --- @class CommentReactionGroup
@@ -31,7 +45,7 @@ M.pr_number = 0
 --- @field content string
 --- @field user string
 ---
----@alias Comments table<string, CommentInfo[]>
+---@alias Comments table<string, ReviewThread[]>
 ---@type Comments
 M.comments = {}
 
@@ -78,16 +92,14 @@ function M.get_repo_info(callback)
 			end
 			if owner and repo then
 				M.repo_info = { owner = owner, repo = repo }
-				callback(owner, repo)
-				return
 			else
 				vim.api.nvim_echo(
 					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
 					true,
 					{}
 				)
-				return
 			end
+			callback(owner, repo)
 		end),
 	}):start()
 end
@@ -107,34 +119,24 @@ function M.get_pr_number(callback)
 		args = { "pr", "view", "--json", "number", "--jq", ".number" },
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
-				vim.api.nvim_echo(
-					{ { "Could not get PR number. Is a PR open for this branch?", "ErrorMsg" } },
-					true,
-					{}
-				)
+				vim.notify("No PR open for this branch")
 				return
 			end
 			local result_json = j:result()
 			local _, t = next(result_json)
 			if not t then
-				vim.api.nvim_echo(
-					{ { "Could not get PR number. Is a PR open for this branch?", "ErrorMsg" } },
-					true,
-					{}
-				)
+				vim.notify("No PR open for this branch")
 				return
 			end
 
 			local pr_number_str = t
 			local pr_number = tonumber(pr_number_str)
-			if pr_number then
-				M.pr_number = pr_number
-				callback(pr_number)
-				return
-			else
+			if not pr_number then
 				vim.notify("Could not get PR number. Is a gh cli installed?")
-				return
+			else
+				M.pr_number = pr_number
 			end
+			callback(pr_number)
 		end),
 	}):start()
 end
@@ -161,11 +163,6 @@ function M.get_comments(callback)
 		end
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
 			if not pr_number then
-				vim.api.nvim_echo(
-					{ { "Could not get PR number. Is a PR open for this branch?", "ErrorMsg" } },
-					true,
-					{}
-				)
 				return
 			end
 			-- 2. Construct the GraphQL query with dynamic data
@@ -177,6 +174,15 @@ function M.get_comments(callback)
           reviewThreads(first: 100) {
             edges {
               node {
+                isResolved
+                resolvedBy {
+                  login
+                }
+                isOutdated
+                isCollapsed
+                viewerCanReply
+                viewerCanResolve
+                viewerCanUnresolve
                 comments(first: 100) {
                   edges {
                     node {
@@ -184,6 +190,10 @@ function M.get_comments(callback)
                       author { login }
                       body
                       path
+                      publishedAt
+                      viewerDidAuthor
+                      viewerCanUpdate
+                      viewerCanReact
                       line
                       startLine
                       originalLine
@@ -258,13 +268,17 @@ function M.get_comments(callback)
 
 					local threads = data.data.repository.pullRequest.reviewThreads.edges
 
+					---@type Comments
 					local comments = {}
 					local thread_count = 0
+					local unsolved_count = 0
 
 					for _, thread_edge in ipairs(threads) do
+						---@type CommentInfo[]
 						local thread = {}
 						local file = ""
-						for _, comment_edge in ipairs(thread_edge.node.comments.edges) do
+						local thread_info = thread_edge.node
+						for _, comment_edge in ipairs(thread_info.comments.edges) do
 							local comment = comment_edge.node
 							-- vim.notify(vim.inspect(comment))
 							if comment.line ~= vim.NIL or comment.originalLine ~= vim.NIL then
@@ -308,20 +322,36 @@ function M.get_comments(callback)
 									body = comment.body,
 									start_line = start_line,
 									end_line = line,
+									viewer_can_update = comment.viewerCanUpdate,
+									viewer_can_react = comment.viewerCanReact,
 									reaction_groups = comment.reactionGroups,
+									published_at = comment.publishedAt,
+									viewer_did_author = comment.viewerDidAuthor,
 								})
 							end
 						end
 						local c = comments[file] or {}
-						table.insert(c, thread)
+						table.insert(c, {
+							is_resolved = thread_info.isResolved,
+							resolved_by = thread_info.resolvedBy ~= vim.NIL and thread_info.resolvedBy.login or nil,
+							is_outdated = thread_info.isOutdated,
+							is_collapsed = thread_info.isCollapsed,
+							viewer_can_reply = thread_info.viewerCanReply,
+							viewer_can_resolve = thread_info.viewerCanResolve,
+							viewer_can_unresolve = thread_info.viewerCanUnresolve,
+							comments = thread,
+						})
 						comments[file] = c
 						thread_count = thread_count + 1
+						if not thread_info.isResolved then
+							unsolved_count = unsolved_count + 1
+						end
 					end
 
 					M.comments = comments
 
 					-- Add unresolved
-					vim.notify("You have " .. thread_count .. " comment threads")
+					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
 					callback(comments)
 				end,
 			}):start()
@@ -349,10 +379,9 @@ function M.get_git_root(callback)
 			local _, t = next(result_json)
 			if not t then
 				vim.notify("No result from git rev-parse command. Is a git cli installed?")
-				return
+			else
+				M.git_root = t
 			end
-
-			M.git_root = t
 			callback(M.git_root)
 		end,
 	}):start()
@@ -379,11 +408,11 @@ function M.get_git_user(callback)
 			local _, t = next(result_json)
 			if not t then
 				vim.notify("No result from git user command. Is a git cli installed?")
-				return
+			else
+				M.git_user = t
+				vim.notify("Logged in as " .. M.git_user)
 			end
 
-			M.git_user = t
-			vim.notify("Logged in as " .. M.git_user)
 			callback(M.git_user)
 		end),
 	}):start()
@@ -392,7 +421,7 @@ end
 ---
 ---@param comment_id integer
 ---@param reaction_key string
----@param callback function?(data: any)
+---@param callback function?(success: boolean)
 function M.add_reaction(comment_id, reaction_key, callback)
 	callback = callback or function(_) end
 
@@ -440,19 +469,17 @@ function M.add_reaction(comment_id, reaction_key, callback)
 				local _, t = next(result_json)
 				if not t then
 					vim.notify("No result from gh add reaction command. Is a gh cli installed?")
-					return
 				end
-
-				local data = vim.json.decode(t)
-
-				vim.notify(vim.inspect(data))
-
-				callback(data)
+				callback(return_val ~= 0)
 			end,
 		}):start()
 	end))
 end
 
+---
+---@param comment_id integer
+---@param reaction_id integer
+---@param callback function?(success: boolean)
 function M.remove_reaction(comment_id, reaction_id, callback)
 	callback = callback or function(_) end
 

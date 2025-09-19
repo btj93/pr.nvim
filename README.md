@@ -52,3 +52,5 @@ return {
 - [ ] Add support for other pickers
 - [ ] Add support for actions such as adding new comments and resolving comments
 - [ ] Add keymap help menu
+- [ ] Auto refresh PR comments when changing branches
+- [ ] Auto refresh PR comments by interval
