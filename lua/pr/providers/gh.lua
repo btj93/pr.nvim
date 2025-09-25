@@ -10,6 +10,7 @@ M.repo_info = {}
 M.pr_number = 0
 
 --- @class ReviewThread
+--- @field id string
 --- @field is_resolved boolean
 --- @field resolved_by string
 --- @field is_outdated boolean
@@ -165,8 +166,8 @@ function M.get_comments(callback)
 			if not pr_number then
 				return
 			end
-			-- 2. Construct the GraphQL query with dynamic data
-			-- https://docs.github.com/en/graphql/reference/objects#pullrequestreviewcomment
+
+			-- ref: https://docs.github.com/en/graphql/reference/objects#pullrequestreviewcomment
 			local query_template = [[
     query($owner: String!, $name: String!, $prNumber: Int!) {
       repository(owner: $owner, name: $name) {
@@ -174,6 +175,7 @@ function M.get_comments(callback)
           reviewThreads(first: 100) {
             edges {
               node {
+                id
                 isResolved
                 resolvedBy {
                   login
@@ -225,7 +227,6 @@ function M.get_comments(callback)
     }
   ]]
 
-			-- 3. Execute the gh api graphql command safely
 			local args = {
 				"api",
 				"graphql",
@@ -244,6 +245,7 @@ function M.get_comments(callback)
 				on_exit = function(j, return_val)
 					-- vim.notify(vim.inspect(j:result()))
 					if return_val ~= 0 then
+						vim.notify(vim.inspect(j:result()))
 						vim.notify("Error running gh api graphql command. Is a gh cli installed?")
 						return
 					end
@@ -331,7 +333,8 @@ function M.get_comments(callback)
 							end
 						end
 						local c = comments[file] or {}
-						table.insert(c, {
+						local composed = {
+							id = thread_info.id,
 							is_resolved = thread_info.isResolved,
 							resolved_by = thread_info.resolvedBy ~= vim.NIL and thread_info.resolvedBy.login or nil,
 							is_outdated = thread_info.isOutdated,
@@ -340,7 +343,19 @@ function M.get_comments(callback)
 							viewer_can_resolve = thread_info.viewerCanResolve,
 							viewer_can_unresolve = thread_info.viewerCanUnresolve,
 							comments = thread,
-						})
+						}
+
+						local found = false
+						for i, th in ipairs(c) do
+							if th.id == thread_info.id then
+								table[i] = composed
+								found = true
+								break
+							end
+						end
+						if not found then
+							table.insert(c, composed)
+						end
 						comments[file] = c
 						thread_count = thread_count + 1
 						if not thread_info.isResolved then
@@ -350,7 +365,6 @@ function M.get_comments(callback)
 
 					M.comments = comments
 
-					-- Add unresolved
 					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
 					callback(comments)
 				end,
@@ -363,9 +377,11 @@ end
 ---@param callback function?(git_root: string)
 function M.get_git_root(callback)
 	callback = callback or function(_) end
-	if M.git_root then
+	if M.git_root ~= "" then
 		callback(M.git_root)
+		return
 	end
+
 	Job:new({
 		command = "git",
 		args = { "rev-parse", "--show-toplevel" },
@@ -391,9 +407,11 @@ end
 ---@param callback function?(git_user: string)
 function M.get_git_user(callback)
 	callback = callback or function(_) end
-	if M.git_user then
+	if M.git_user ~= "" then
 		callback(M.git_user)
+		return
 	end
+
 	Job:new({
 		command = "gh",
 		args = { "api", "user", "-q", ".login" },

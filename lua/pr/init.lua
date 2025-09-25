@@ -25,6 +25,8 @@ local sign_comment = "PRComment"
 local sign_comment_multi_line_start = "PRCommentMultiLineStart"
 local sign_comment_multi_line_connector = "PRCommentMultiLineConnector"
 local sign_comment_multi_line_end = "PRCommentMultiLineEnd"
+local unreolved_text = "PRUnresolved"
+local resolved_text = "PRResolved"
 
 local sign_hl = "DiffComment"
 
@@ -155,57 +157,58 @@ function M.draw(buf)
 			return
 		end
 
+		local start_line = 0
+		local end_line = 0
+		local c = {}
+
 		local relative_path = buffer_path:sub(#git_root + 2)
 		local comments = gh.comments[relative_path] or {}
-		for _, thread in ipairs(comments) do
-			local c = {}
-			local start_line = 0
-			local end_line = 0
-			for _, comment in ipairs(thread.comments) do
-				end_line = comment.end_line
-				start_line = comment.start_line
-				local author = comment.author
-				local text = "🗨️ " .. author .. ": " .. comment.body:gsub("\r\n", " "):gsub("\n", " ")
-				-- vim.api.nvim_buf_set_extmark(buf, comments_ns_id, start_line, -1, {
-				--   end_line = end_line,
-				--   end_col = 0,
-				--   hl_group = hl_comment,
-				-- })
-				table.insert(c, text)
-			end
-
-			if start_line == end_line then
-				vim.fn.sign_place(0, sign_group, sign_comment, buf, { lnum = end_line })
-			else
-				vim.fn.sign_place(0, sign_group, sign_comment_multi_line_start, buf, { lnum = start_line })
-				for i = start_line + 1, end_line - 1 do
-					vim.fn.sign_place(0, sign_group, sign_comment_multi_line_connector, buf, { lnum = i })
-				end
-				vim.fn.sign_place(0, sign_group, sign_comment_multi_line_end, buf, { lnum = end_line })
-			end
-
-			if M.opts.virtual_text then
-				vim.api.nvim_buf_set_extmark(buf, comments_ns_id, end_line - 1, -1, {
-					virt_text = { { table.concat(c, " | "), "PRComment" } },
-					virt_text_pos = "eol",
-				})
-			end
-
-			if M.opts.virtual_line then
-				local virt_lines = {}
-				for _, comment in ipairs(thread.comments) do
-					local author = comment.author
-					local text = "🗨️ " .. author .. ": " .. comment.body:gsub("\r\n", " "):gsub("\n", " ")
-					table.insert(virt_lines, { { text, "PRComment" } })
-				end
-				vim.api.nvim_buf_set_extmark(buf, comments_ns_id, end_line - 1, -1, {
-					virt_lines = virt_lines,
-					virt_text_pos = "eol",
-				})
-			end
-
-			comments_placed = comments_placed + 1
+		if next(comments) == nil then
+			vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+			return
 		end
+		for _, thread in ipairs(comments) do
+			local _, first_comment = next(thread.comments)
+			if first_comment then
+				start_line = first_comment.start_line
+				end_line = first_comment.end_line
+				local text = "      "
+					.. first_comment.author
+					.. ": "
+					.. first_comment.body:gsub("\r\n", " "):gsub("\n", " ")
+				local hl = "DiagnosticVirtualLinesWarn"
+				if thread.is_resolved then
+					hl = "DiagnosticVirtualLinesOk"
+				end
+				table.insert(c, { text, hl })
+			end
+		end
+
+		if start_line == end_line then
+			vim.fn.sign_place(0, sign_group, sign_comment, buf, { lnum = end_line })
+		else
+			vim.fn.sign_place(0, sign_group, sign_comment_multi_line_start, buf, { lnum = start_line })
+			for i = start_line + 1, end_line - 1 do
+				vim.fn.sign_place(0, sign_group, sign_comment_multi_line_connector, buf, { lnum = i })
+			end
+			vim.fn.sign_place(0, sign_group, sign_comment_multi_line_end, buf, { lnum = end_line })
+		end
+
+		if M.opts.virtual_text then
+			vim.api.nvim_buf_set_extmark(buf, comments_ns_id, end_line - 1, -1, {
+				virt_text = c,
+				virt_text_pos = "eol",
+			})
+		end
+
+		if M.opts.virtual_line then
+			vim.api.nvim_buf_set_extmark(buf, comments_ns_id, end_line - 1, -1, {
+				virt_lines = { c },
+				virt_text_pos = "eol",
+			})
+		end
+
+		comments_placed = comments_placed + 1
 
 		if comments_placed > 0 then
 			vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
@@ -362,63 +365,6 @@ function M.popup(relative_path, line)
 	end))
 end
 
-function M.picker()
-	local Snacks = require("snacks")
-
-	return Snacks.picker({
-		---@return snacks.picker.finder.Item[]
-		finder = function()
-			local items = {}
-			for file, threads in pairs(gh.comments) do
-				for _, thread in ipairs(threads) do
-					local _, first = next(thread.comments)
-					if first then
-						table.insert(items, {
-							file = file,
-							["data"] = {
-								["author"] = first.author,
-								["body"] = first.body,
-							},
-							pos = { first.start_line, 0 },
-							end_pos = { first.end_line, 0 },
-						})
-					end
-				end
-			end
-
-			return items
-		end,
-		-- layout = {
-		-- 	layout = {
-		-- 		box = "horizontal",
-		-- 		width = 0.5,
-		-- 		height = 0.5,
-		-- 		{
-		-- 			box = "vertical",
-		-- 			border = "rounded",
-		-- 			title = "Find directory",
-		-- 			{ win = "input", height = 1, border = "bottom" },
-		-- 			{ win = "list", border = "none" },
-		-- 		},
-		-- 	},
-		-- },
-		format = function(item, _)
-			local ret = {}
-			local a = Snacks.picker.util.align
-			local icon, icon_hl = Snacks.util.icon(item.file.ft)
-			ret[#ret + 1] = { a(icon, 3), icon_hl }
-			ret[#ret + 1] = { " " }
-			ret[#ret + 1] = { a(item.data.author, 15), "@variable.builtin" }
-			ret[#ret + 1] = { " " }
-			ret[#ret + 1] = { Snacks.picker.util.truncate(item.data.body, 20), "@text.literal" }
-			ret[#ret + 1] = { "  " }
-			ret[#ret + 1] = { item.file, "SnacksPickerComment" }
-
-			return ret
-		end,
-	})
-end
-
 function M.stop()
 	M.enabled = false
 	M.wins = {}
@@ -478,6 +424,10 @@ function M.setup(opts)
 	vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
 	vim.api.nvim_set_hl(0, sign_comment, { fg = "Grey", italic = true })
 	vim.api.nvim_set_hl(0, hl_comment, { bg = "LightBlue" })
+	-- reddish grey
+	vim.api.nvim_set_hl(0, unreolved_text, { bg = "#997570", italic = true })
+	-- greenish grey
+	vim.api.nvim_set_hl(0, resolved_text, { bg = "#82A67D", italic = true })
 
 	M.start()
 	ui.setup()
