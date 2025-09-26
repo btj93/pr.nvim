@@ -63,7 +63,7 @@ M.actions = {
 		end,
 	},
 	unresolve = {
-		key = "u",
+		key = "r",
 		menu_text = "Unresolve",
 		menu_desc = "Unresolve this thread",
 		popup_hint = "Un[R]esolve",
@@ -182,8 +182,10 @@ function M.make_popup(thread, comment, enter)
 			},
 		},
 		buf_options = {
+			-- FIXME: user can edit emoji lines
 			modifiable = comment.viewer_can_update,
 			readonly = true,
+			filetype = "markdown",
 		},
 		win_options = {
 			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
@@ -217,25 +219,26 @@ function M.make_popup(thread, comment, enter)
 		end
 	end)
 
-	local body = M.split_crlf(comment.body)
+	local body = vim.fn.split(comment.body, "\r\n")
 	local emojis = M.format_reaction(comment.reaction_groups)
 	-- FIXME: fix hardcode
 	local body_width = 78
 	local emojis_width = vim.fn.strdisplaywidth(emojis)
 
-	local lines = { unpack(body), (" "):rep(body_width), emojis .. (" "):rep(body_width - emojis_width) }
+	table.insert(body, (" "):rep(body_width))
+	table.insert(body, emojis .. (" "):rep(body_width - emojis_width))
 
-	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, lines)
+	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, body)
 
-	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body, 0, {
+	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body - 2, 0, {
 		end_col = 0,
-		end_line = #body + 1,
+		end_line = #body - 1,
 		hl_group = comment_sep,
 	})
 
-	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body + 1, 0, {
+	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body - 1, 0, {
 		end_col = 0,
-		end_line = #body + 2,
+		end_line = #body,
 		hl_group = "StatusLine",
 	})
 
@@ -303,7 +306,7 @@ function M.make_layout(popups)
 	for _, popup in ipairs(popups) do
 		local lines = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
 		-- padding
-		table.insert(comment_boxes, Layout.Box(popup, { size = #lines + 3 }))
+		table.insert(comment_boxes, Layout.Box(popup, { size = #lines }))
 	end
 
 	gh.get_git_user()
@@ -509,32 +512,6 @@ function M.make_help_menu(thread, comment, popup_winid)
 	})
 
 	return menu
-end
-
----
----@param s string
----@return string[]
-function M.split_crlf(s)
-	local res = {}
-	local delim = "\r\n"
-	local i = 1
-
-	-- special-case empty string -> one empty field
-	if s == "" then
-		return { "" }
-	end
-
-	while true do
-		local start_pos, end_pos = string.find(s, delim, i, true) -- plain find
-		if not start_pos then
-			table.insert(res, string.sub(s, i)) -- remainder (may be "")
-			break
-		end
-		table.insert(res, string.sub(s, i, start_pos - 1)) -- segment before delim (may be "")
-		i = end_pos + 1 -- move past the delimiter
-	end
-
-	return res
 end
 
 function M.setup()
