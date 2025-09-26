@@ -146,6 +146,7 @@ end
 ---@param callback function?(comments: Comments)
 function M.get_comments(callback)
 	callback = callback or function(_) end
+
 	if next(M.comments) then
 		callback(M.comments)
 		return

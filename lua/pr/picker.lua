@@ -15,10 +15,16 @@ function M.picker(opts)
 
 	local format = opts.format or M.format
 
-	gh.get_comments(function(comments)
+	gh.get_comments(vim.schedule_wrap(function(comments)
 		for _, filter in ipairs(opts.filters or {}) do
 			comments = filter(comments)
 		end
+
+		if next(comments) == nil then
+			vim.notify("No comments to pick")
+			return
+		end
+
 		return Snacks.picker({
 			---@return snacks.picker.finder.Item[]
 			finder = function()
@@ -33,6 +39,7 @@ function M.picker(opts)
 									["author"] = first.author,
 									["body"] = first.body,
 								},
+								text = first.author .. first.body .. file,
 								pos = { first.start_line, 0 },
 								end_pos = { first.end_line, 0 },
 							})
@@ -58,7 +65,7 @@ function M.picker(opts)
 			-- },
 			format = format,
 		})
-	end)
+	end))
 end
 
 ---

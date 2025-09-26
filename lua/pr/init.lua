@@ -7,6 +7,10 @@ M.enabled = false
 M.bufs = {}
 M.wins = {}
 
+---@type table<string, string>
+-- TODO: validate with version number
+M.drafts = {}
+
 M.opts = {
 	virtual_text = true,
 	virtual_line = true,
@@ -16,6 +20,7 @@ M.opts = {
 		connector = "│",
 		end_line = "└",
 	},
+	debug = false,
 }
 -- Sign definitions
 local sign_group = "PRDiffSigns"
@@ -111,10 +116,12 @@ local function place_highlights()
 		end
 	end
 
-	if highlights_placed > 0 then
-		vim.api.nvim_echo({ { "PR diff highlights placed for " .. relative_path, "InfoMsg" } }, true, {})
-	else
-		vim.api.nvim_echo({ { "No PR changes found for the current file.", "WarningMsg" } }, true, {})
+	if M.opts.debug then
+		if highlights_placed > 0 then
+			vim.api.nvim_echo({ { "PR diff highlights placed for " .. relative_path, "InfoMsg" } }, true, {})
+		else
+			vim.api.nvim_echo({ { "No PR changes found for the current file.", "WarningMsg" } }, true, {})
+		end
 	end
 end
 
@@ -164,7 +171,9 @@ function M.draw(buf)
 		local relative_path = buffer_path:sub(#git_root + 2)
 		local comments = gh.comments[relative_path] or {}
 		if next(comments) == nil then
-			vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+			if M.opts.debug then
+				vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+			end
 			return
 		end
 		for _, thread in ipairs(comments) do
@@ -210,10 +219,12 @@ function M.draw(buf)
 
 		comments_placed = comments_placed + 1
 
-		if comments_placed > 0 then
-			vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
-		else
-			vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+		if M.opts.debug then
+			if comments_placed > 0 then
+				vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
+			else
+				vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+			end
 		end
 	end))
 end
@@ -355,7 +366,7 @@ function M.popup(relative_path, line)
 			if first_comment and first_comment.start_line <= line and first_comment.end_line >= line then
 				local popups = {}
 				for i, comment in ipairs(thread.comments) do
-					table.insert(popups, ui.make_popup(comment, i == 1))
+					table.insert(popups, ui.make_popup(thread, comment, i == 1))
 				end
 				local layout = ui.make_layout(popups)
 				layout:mount()

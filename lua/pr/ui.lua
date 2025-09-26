@@ -12,6 +12,7 @@ local M = {}
 
 local popup_hl = "PRCommentPopup"
 local hl_emoji = "PREmojiLine"
+local comment_sep = "PRCommentSeparator"
 
 local reaction_contents = {
 	CONFUSED = "😕",
@@ -26,42 +27,141 @@ local reaction_contents = {
 
 M.actions = {
 	emoji = {
+		key = "e",
 		menu_text = "Emoji",
 		menu_desc = "Reactions for this comment",
-		popup_text = "[E]moji",
+		popup_hint = "[E]moji",
+		show_hint = true,
+		---
+		---@param comment CommentInfo
+		---@return boolean
+		can_perform = function(_, comment)
+			return comment.viewer_can_react
+		end,
 		---
 		---@param comment CommentInfo
 		---@param popup_winid number
-		perform = function(comment, popup_winid)
+		perform = function(_, comment, popup_winid)
 			local menu = M.make_emoji_menu(comment.database_id, comment.reaction_groups, popup_winid)
 			menu:mount()
 		end,
 	},
-	comment = {
-		menu_text = "Comment",
-		menu_desc = "Reply this thread",
-		popup_text = "[C]omment",
-		perform = function(comment, popup_winid) end,
-	},
 	resolve = {
+		key = "r",
 		menu_text = "Resolve",
 		menu_desc = "Resolve this thread",
-		popup_text = "[R]esolve",
-		perform = function(comment, popup_winid) end,
+		popup_hint = "[R]esolve",
+		show_hint = true,
+		---
+		---@param thread ReviewThread
+		---@return boolean
+		can_perform = function(thread, _)
+			return (not thread.is_resolved) and thread.viewer_can_resolve
+		end,
+		perform = function(thread, comment, popup_winid)
+			vim.notify("TODO: implement")
+		end,
+	},
+	unresolve = {
+		key = "u",
+		menu_text = "Unresolve",
+		menu_desc = "Unresolve this thread",
+		popup_hint = "Un[R]esolve",
+		show_hint = true,
+		---
+		---@param thread ReviewThread
+		---@return boolean
+		can_perform = function(thread, _)
+			return thread.is_resolved and thread.viewer_can_unresolve
+		end,
+		perform = function(thread, comment, popup_winid)
+			vim.notify("TODO: implement")
+		end,
+	},
+	edit = {
+		key = nil,
+		menu_text = "Edit",
+		menu_desc = "Enter insert mode to edit this comment",
+		popup_hint = nil,
+		show_hint = false,
+		---
+		---@param comment CommentInfo
+		---@return boolean
+		can_perform = function(_, comment)
+			return comment.viewer_can_update
+		end,
+		perform = function(_, _, popup_winid)
+			vim.api.nvim_set_current_win(popup_winid)
+			vim.cmd("startinsert")
+		end,
+	},
+	save = {
+		-- FIXME: keymap
+		key = nil,
+		menu_text = "Save",
+		menu_desc = "Save edited comment",
+		popup_hint = nil,
+		show_hint = false,
+		can_perform = function(_, comment)
+			-- TODO: check comment is edited
+		end,
+		perform = function(thread, comment, popup_winid)
+			vim.notify("TODO: implement")
+		end,
 	},
 	help = {
+		key = "?",
 		menu_text = "Help",
 		menu_desc = "Show this help menu",
-		popup_text = "[?]help",
-		perform = function(comment, popup_winid) end,
+		popup_hint = "[?]help",
+		show_hint = false,
+		can_perform = function()
+			return true
+		end,
+		---
+		---@param thread ReviewThread
+		---@param comment CommentInfo
+		---@param popup_winid number
+		perform = function(thread, comment, popup_winid)
+			local menu = M.make_help_menu(thread, comment, popup_winid)
+			menu:mount()
+
+			for i, node in ipairs(menu.tree:get_nodes()) do
+				local action = M.actions[node.action]
+				vim.api.nvim_buf_set_extmark(menu.bufnr, menu.ns_id, i - 1, 0, {
+					virt_text = { { action.menu_desc, "Comment" } },
+					virt_text_pos = "right_align",
+				})
+			end
+		end,
+	},
+	quit = {
+		key = "q",
+		menu_text = "Quit",
+		menu_desc = "Close comments popup",
+		popup_hint = "[Q]uit",
+		show_hint = true,
+		can_perform = function()
+			return true
+		end,
+		perform = function(_, _, _)
+			-- implemented in M.make_layout
+		end,
 	},
 }
 
+M.reply_actions = {
+	submit = {},
+	suggestion = {},
+	saved_reply = {},
+}
+
 ---
+---@param thread ReviewThread
 ---@param comment CommentInfo
 ---@param enter boolean
 ---@return NuiPopup
-function M.make_popup(comment, enter)
+function M.make_popup(thread, comment, enter)
 	local author_display = comment.author
 	if comment.viewer_did_author then
 		author_display = author_display .. " (you)"
@@ -82,7 +182,7 @@ function M.make_popup(comment, enter)
 			},
 		},
 		buf_options = {
-			modifiable = false,
+			modifiable = comment.viewer_can_update,
 			readonly = true,
 		},
 		win_options = {
@@ -98,7 +198,15 @@ function M.make_popup(comment, enter)
 
 	popup:on(buf_enter_event, function()
 		popup.border:set_highlight(popup_hl)
-		local menu = " [E]moji | [C]omment | [R]esolve | [Q]uit  "
+		local menus = {}
+		for _, action in pairs(M.actions) do
+			if action.show_hint and action.can_perform(thread, comment) then
+				table.insert(menus, action.popup_hint)
+			end
+		end
+
+		-- FIXME: menu text should be dynamic
+		local menu = " " .. table.concat(menus, " | ") .. " "
 		popup.border:set_text("bottom", menu, "right")
 	end)
 	popup:on(event.BufLeave, function()
@@ -111,7 +219,7 @@ function M.make_popup(comment, enter)
 
 	local body = M.split_crlf(comment.body)
 	local emojis = M.format_reaction(comment.reaction_groups)
-	-- TODO: fix hardcode
+	-- FIXME: fix hardcode
 	local body_width = 78
 	local emojis_width = vim.fn.strdisplaywidth(emojis)
 
@@ -122,7 +230,7 @@ function M.make_popup(comment, enter)
 	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body, 0, {
 		end_col = 0,
 		end_line = #body + 1,
-		hl_group = "Underlined",
+		hl_group = comment_sep,
 	})
 
 	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body + 1, 0, {
@@ -131,24 +239,13 @@ function M.make_popup(comment, enter)
 		hl_group = "StatusLine",
 	})
 
-	popup:map("n", "e", function()
-		local menu = M.make_emoji_menu(comment.database_id, comment.reaction_groups, popup.winid)
-		menu:mount()
-	end)
-
-	popup:map("n", "?", function()
-		local menu = M.make_help_menu(comment, popup.winid)
-		menu:mount()
-
-		local i = 0
-		for _, action in pairs(M.actions) do
-			vim.api.nvim_buf_set_extmark(menu.bufnr, menu.ns_id, i, 0, {
-				virt_text = { { action.menu_desc, "Comment" } },
-				virt_text_pos = "right_align",
-			})
-			i = i + 1
+	for k, action in pairs(M.actions) do
+		if action.key then
+			popup:map("n", action.key, function()
+				M.actions[k].perform(thread, comment, popup.winid)
+			end)
 		end
-	end)
+	end
 
 	return popup
 end
@@ -157,7 +254,7 @@ end
 ---
 ---@return NuiPopup
 function M.make_new_reply_popup()
-	local new_comment_popup = Popup({
+	local reply_popup = Popup({
 		border = {
 			padding = {
 				top = 1,
@@ -182,20 +279,20 @@ function M.make_new_reply_popup()
 		enter = false,
 	})
 
-	new_comment_popup:on(event.BufEnter, function()
-		new_comment_popup.border:set_highlight(popup_hl)
-		new_comment_popup.border:set_text("bottom", " [ 󰌑 Submit ] ", "right")
+	reply_popup:on(event.BufEnter, function()
+		reply_popup.border:set_highlight(popup_hl)
+		reply_popup.border:set_text("bottom", " [ 󰌑 Submit ] ", "right")
 	end)
 
-	new_comment_popup:on(event.BufLeave, function()
-		new_comment_popup.border:set_highlight("FloatBorder")
+	reply_popup:on(event.BufLeave, function()
+		reply_popup.border:set_highlight("FloatBorder")
 		-- don't set text if popup is closing
-		if new_comment_popup.border.bufnr then
-			new_comment_popup.border:set_text("bottom", nil, "right")
+		if reply_popup.border.bufnr then
+			reply_popup.border:set_text("bottom", nil, "right")
 		end
 	end)
 
-	return new_comment_popup
+	return reply_popup
 end
 
 ---
@@ -352,10 +449,11 @@ function M.format_reaction(reaction_group)
 end
 
 ---
+---@param thread ReviewThread
 ---@param comment CommentInfo
 ---@param popup_winid number
 ---@return NuiMenu
-function M.make_help_menu(comment, popup_winid)
+function M.make_help_menu(thread, comment, popup_winid)
 	---@type nui_popup_options
 	local popup_options = {
 		position = "50%",
@@ -373,10 +471,16 @@ function M.make_help_menu(comment, popup_winid)
 
 	local lines = {}
 	for k, action in pairs(M.actions) do
-		local menu = Menu.item(Line({ Text(action.menu_text) }), {
-			action = k,
-		})
+		local t = Text(action.menu_text, "NonText")
+		local can_perform_bool = action.can_perform(thread, comment)
+		if can_perform_bool then
+			t = Text(action.menu_text)
+		end
 
+		local menu = Menu.item(Line({ t }), {
+			action = k,
+			can_perform_bool = can_perform_bool,
+		})
 		table.insert(lines, menu)
 	end
 
@@ -387,12 +491,20 @@ function M.make_help_menu(comment, popup_winid)
 		keymap = {
 			focus_next = { "j", "<Down>", "<Tab>" },
 			focus_prev = { "k", "<Up>", "<S-Tab>" },
-			close = { "<Esc>", "<C-c>", "?" },
+			close = { "<Esc>", "<C-c>", "?", "q" },
 			submit = { "<CR>", "<Space>" },
 		},
+		should_skip_item = function(item)
+			return not M.actions[item.action].can_perform(thread, comment)
+		end,
 		on_close = function() end,
 		on_submit = function(item)
-			M.actions[item.action].perform(comment, popup_winid)
+			if item.action == "help" then
+				vim.notify("You are already here!")
+				return
+			end
+
+			M.actions[item.action].perform(thread, comment, popup_winid)
 		end,
 	})
 
@@ -427,8 +539,8 @@ end
 
 function M.setup()
 	vim.api.nvim_set_hl(0, hl_emoji, { bg = "#4493f8", fg = "white" })
-
 	vim.api.nvim_set_hl(0, popup_hl, { fg = "Yellow" })
+	vim.api.nvim_set_hl(0, comment_sep, { underline = true, fg = "Grey" })
 end
 
 function M.replace_chars(pos, str, r)
