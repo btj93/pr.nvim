@@ -25,8 +25,19 @@ local reaction_contents = {
 	THUMBS_UP = "👍",
 }
 
+---@class Action
+---@field mode? string
+---@field key? string
+---@field menu_text string
+---@field menu_desc string
+---@field popup_hint string
+---@field show_hint boolean
+---@field can_perform function(thread: ReviewThread, comment: CommentInfo): boolean
+---@field perform function(thread: ReviewThread, comment: CommentInfo, popup_winid: number)
+---@type table<string, Action>
 M.actions = {
 	emoji = {
+		mode = "n",
 		key = "e",
 		menu_text = "Emoji",
 		menu_desc = "Reactions for this comment",
@@ -47,6 +58,7 @@ M.actions = {
 		end,
 	},
 	resolve = {
+		mode = "n",
 		key = "r",
 		menu_text = "Resolve",
 		menu_desc = "Resolve this thread",
@@ -63,6 +75,7 @@ M.actions = {
 		end,
 	},
 	unresolve = {
+		mode = "n",
 		key = "r",
 		menu_text = "Unresolve",
 		menu_desc = "Unresolve this thread",
@@ -78,11 +91,46 @@ M.actions = {
 			vim.notify("TODO: implement")
 		end,
 	},
+	reply = {
+		mode = "n",
+		key = "c",
+		menu_text = "Comment",
+		menu_desc = "Reply to this thread",
+		popup_hint = "[C]omment",
+		show_hint = true,
+		---
+		---@param thread ReviewThread
+		---@return boolean
+		can_perform = function(thread, _)
+			return thread.viewer_can_reply
+		end,
+		perform = function(thread, comment, popup_winid)
+			vim.notify("TODO: implement")
+		end,
+	},
+	quote_reply = {
+		mode = "v",
+		key = "c",
+		menu_text = "Quote Comment",
+		menu_desc = "Quote reply this comment",
+		popup_hint = "[C]omment",
+		show_hint = false,
+		---
+		---@param thread ReviewThread
+		---@return boolean
+		can_perform = function(thread, _)
+			return thread.viewer_can_reply
+		end,
+		perform = function(thread, comment, popup_winid)
+			vim.notify("TODO: implement")
+		end,
+	},
 	edit = {
+		mode = nil,
 		key = nil,
 		menu_text = "Edit",
 		menu_desc = "Enter insert mode to edit this comment",
-		popup_hint = nil,
+		popup_hint = "",
 		show_hint = false,
 		---
 		---@param comment CommentInfo
@@ -97,10 +145,11 @@ M.actions = {
 	},
 	save = {
 		-- FIXME: keymap
+		mode = "n",
 		key = nil,
 		menu_text = "Save",
 		menu_desc = "Save edited comment",
-		popup_hint = nil,
+		popup_hint = "",
 		show_hint = false,
 		can_perform = function(_, comment)
 			-- TODO: check comment is edited
@@ -109,7 +158,23 @@ M.actions = {
 			vim.notify("TODO: implement")
 		end,
 	},
+	delete = {
+		mode = "n",
+		key = "<M-d>",
+		menu_text = "Delete",
+		menu_desc = "Delete this comment",
+		popup_hint = "<M-d>elete",
+		show_hint = true,
+		can_perform = function(_, comment)
+			return comment.viewer_can_delete
+		end,
+		perform = function(thread, comment, popup_winid)
+			vim.notify("TODO: implement")
+			--- TODO: add a confirm dialog
+		end,
+	},
 	help = {
+		mode = "n",
 		key = "?",
 		menu_text = "Help",
 		menu_desc = "Show this help menu",
@@ -136,6 +201,7 @@ M.actions = {
 		end,
 	},
 	quit = {
+		mode = "n",
 		key = "q",
 		menu_text = "Quit",
 		menu_desc = "Close comments popup",
@@ -244,7 +310,7 @@ function M.make_popup(thread, comment, enter)
 
 	for k, action in pairs(M.actions) do
 		if action.key then
-			popup:map("n", action.key, function()
+			popup:map(action.mode, action.key, function()
 				M.actions[k].perform(thread, comment, popup.winid)
 			end)
 		end

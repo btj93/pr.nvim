@@ -30,6 +30,7 @@ M.pr_number = 0
 --- @field end_line integer
 --- @field viewer_can_update boolean
 --- @field viewer_can_react boolean
+--- @field viewer_can_delete boolean
 --- @field reaction_groups table<CommentReactionGroup>
 ---
 --- @class CommentReactionGroup
@@ -196,6 +197,7 @@ function M.get_comments(callback)
                       publishedAt
                       viewerDidAuthor
                       viewerCanUpdate
+                      viewerCanDelete
                       viewerCanReact
                       line
                       startLine
@@ -327,6 +329,7 @@ function M.get_comments(callback)
 									end_line = line,
 									viewer_can_update = comment.viewerCanUpdate,
 									viewer_can_react = comment.viewerCanReact,
+									viewer_can_delete = comment.viewerCanDelete,
 									reaction_groups = comment.reactionGroups,
 									published_at = comment.publishedAt,
 									viewer_did_author = comment.viewerDidAuthor,
