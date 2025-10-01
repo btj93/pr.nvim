@@ -359,20 +359,78 @@ function M.popup(relative_path, line)
 		local row, _ = unpack(vim.api.nvim_win_get_cursor(0))
 		line = line or row
 
-		local comments = gh.comments[relative_path] or {}
+		gh.get_comments(vim.schedule_wrap(function(comments)
+			comments = comments[relative_path] or {}
 
-		for _, thread in ipairs(comments) do
-			local _, first_comment = next(thread.comments)
-			if first_comment and first_comment.start_line <= line and first_comment.end_line >= line then
-				local popups = {}
-				for i, comment in ipairs(thread.comments) do
-					table.insert(popups, ui.make_popup(thread, comment, i == 1))
+			for _, thread in ipairs(comments) do
+				local _, first_comment = next(thread.comments)
+				if first_comment and first_comment.start_line <= line and first_comment.end_line >= line then
+					local popups = {}
+					for i, comment in ipairs(thread.comments) do
+						table.insert(popups, ui.make_popup(thread, comment, i == 1))
+					end
+					local layout = ui.make_layout(popups)
+					layout:mount()
+					break
 				end
-				local layout = ui.make_layout(popups)
-				layout:mount()
-				break
 			end
+		end))
+	end))
+end
+
+---
+---@param direction "forward"|"backward"
+---@param relative_path string?
+---@param line integer?
+function M.cycle_comments_in_buffer(direction, relative_path, line)
+	gh.get_git_root(vim.schedule_wrap(function(git_root)
+		if git_root == nil or git_root == "" then
+			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
+			return
 		end
+
+		local buf = vim.api.nvim_get_current_buf()
+		local buffer_path = vim.api.nvim_buf_get_name(buf)
+		if buffer_path == "" then
+			return
+		end
+		relative_path = relative_path or buffer_path:sub(#git_root + 2)
+		local row, _ = unpack(vim.api.nvim_win_get_cursor(0))
+		line = line or row
+
+		gh.get_comments(vim.schedule_wrap(function(comments)
+			comments = comments[relative_path] or {}
+
+			if #comments == 0 then
+				vim.notify("No comments found in this file.")
+				return
+			end
+
+			local before_line = nil
+			local after_line = nil
+			local before_index = nil
+			local after_index = nil
+			for i, thread in ipairs(comments) do
+				local _, first_comment = next(thread.comments)
+				if first_comment then
+					if first_comment.start_line < line then
+						before_line = first_comment.start_line
+						before_index = i
+					else
+						after_line = first_comment.start_line
+						after_index = i
+					end
+				end
+			end
+
+			if direction == "forward" then
+				vim.api.nvim_win_set_cursor(0, { after_line or before_line, 0 })
+				vim.notify("Comment " .. after_index or before_index .. " of " .. #comments)
+			elseif direction == "backward" then
+				vim.api.nvim_win_set_cursor(0, { before_line or after_line, 0 })
+				vim.notify("Comment " .. before_index or after_index .. " of " .. #comments)
+			end
+		end))
 	end))
 end
 
