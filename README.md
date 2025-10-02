@@ -35,22 +35,35 @@ return {
     {
       "<leader>fg",
       function()
-        require("pr").picker()
+        require("pr.picker").picker()
       end,
       { desc = "Check PR" },
     },
+    {
+      "]c",
+      function()
+        require("pr").cycle_comments_in_buffer("forward")
+      end,
+    },
+    {
+      "[c",
+      function()
+        require("pr").cycle_comments_in_buffer("backward")
+      end,
+    },
   },
-  dev = true,
 }
 ```
 
 ## Coming Soon
 
-- [ ] Add support for other providers
+- [ ] Add support for other git providers
+- [ ] Add support for other pickers
+- [ ] Visual mode select lines to comment
+- [ ] Visual mode select comment to quote reply
 - [ ] PR explorer
 - [ ] Switch to a PR branch
-- [ ] Add support for other pickers
 - [ ] Add support for actions such as adding new comments and resolving comments
-- [ ] Add keymap help menu
 - [ ] Auto refresh PR comments when changing branches
 - [ ] Auto refresh PR comments by interval
+- [ ] Auto refresh PR comments by autocmd
