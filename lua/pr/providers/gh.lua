@@ -143,6 +143,38 @@ function M.get_pr_number(callback)
 	}):start()
 end
 
+-- Helper to get current commit hash
+---
+---@param callback function?(hash: string)
+---@return nil
+function M.get_commit_hash(callback)
+	callback = callback or function(_, _) end
+
+	Job:new({
+		command = "git",
+		args = { "rev-parse", "HEAD" },
+		on_exit = vim.schedule_wrap(function(j, return_val)
+			if return_val ~= 0 then
+				vim.api.nvim_echo({ { "Could not determine commit hash.", "ErrorMsg" } }, true, {})
+				return
+			end
+			local result_json = j:result()
+			local _, t = next(result_json)
+			if not t then
+				vim.api.nvim_echo({ { "Could not determine commit hash.", "ErrorMsg" } }, true, {})
+				return
+			end
+
+			local hash = t
+
+			if not hash then
+				vim.api.nvim_echo({ { "Could not determine commit hash.", "ErrorMsg" } }, true, {})
+			end
+			callback(hash)
+		end),
+	}):start()
+end
+
 ---
 ---@param callback function?(comments: Comments)
 function M.get_comments(callback)
@@ -152,7 +184,6 @@ function M.get_comments(callback)
 		callback(M.comments)
 		return
 	end
-	-- vim.notify(vim.inspect(M.comments))
 
 	-- 1. Get dynamic repository and PR info
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
@@ -246,7 +277,6 @@ function M.get_comments(callback)
 				command = "gh",
 				args = args,
 				on_exit = function(j, return_val)
-					-- vim.notify(vim.inspect(j:result()))
 					if return_val ~= 0 then
 						vim.notify(vim.inspect(j:result()))
 						vim.notify("Error running gh api graphql command. Is a gh cli installed?")
@@ -535,6 +565,132 @@ function M.remove_reaction(comment_id, reaction_id, callback)
 				callback(return_val ~= 0)
 			end,
 		}):start()
+	end))
+end
+
+---
+---@param comment_id integer
+---@param body string
+---@param callback function(success: boolean)
+function M.reply(comment_id, body, callback)
+	callback = callback or function(_) end
+
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
+
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			-- gh api \
+			--   --method POST \
+			--   -H "Accept: application/vnd.github+json" \
+			--   -H "X-GitHub-Api-Version: 2022-11-28" \
+			--   /repos/OWNER/REPO/pulls/PULL_NUMBER/comments/COMMENT_ID/replies \
+			--    -f 'body=Great stuff!'
+
+			local args = {
+				"api",
+				"--method",
+				"POST",
+				"-H",
+				"'Accept: application/vnd.github+json'",
+				"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments/" .. comment_id .. "/replies",
+				"-f",
+				"body=" .. body,
+			}
+			Job:new({
+				command = "gh",
+				args = args,
+				on_exit = function(j, return_val)
+					if return_val ~= 0 then
+						vim.notify(vim.inspect(j:result()))
+						vim.notify("Error running gh reply command. Is a gh cli installed?")
+					end
+
+					callback(return_val ~= 0)
+				end,
+			}):start()
+		end))
+	end))
+end
+
+---
+---@param relative_path string
+---@param start_line integer
+---@param end_line integer
+---@param body string
+---@param callback function(success: boolean)
+function M.comment(relative_path, start_line, end_line, body, callback)
+	callback = callback or function(_) end
+
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
+
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number then
+				return
+			end
+
+			M.get_commit_hash(vim.schedule_wrap(function(commit_hash)
+				if not commit_hash then
+					return
+				end
+
+				-- gh api \
+				--   --method POST \
+				--   -H "Accept: application/vnd.github+json" \
+				--   -H "X-GitHub-Api-Version: 2022-11-28" \
+				--   /repos/OWNER/REPO/pulls/PULL_NUMBER/comments \
+				--    -f 'body=Great stuff!' -f 'commit_id=6dcb09b5b57875f334f61aebed695e2e4193db5e' -f 'path=file1.txt' -F "start_line=1" -f 'start_side=RIGHT' -F "line=2" -f 'side=RIGHT'
+
+				local args = {
+					"api",
+					"--method",
+					"POST",
+					"-H",
+					"'Accept: application/vnd.github+json'",
+					"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments",
+					"-f",
+					"'body=" .. body .. "'",
+					"-f",
+					"'commit_id=" .. commit_hash .. "'",
+					"-f",
+					"'path=" .. relative_path .. "'",
+					"-F",
+					"start_line=" .. start_line,
+					"-f",
+					"'start_side=RIGHT'",
+					"-F",
+					"line=" .. end_line,
+					"-f",
+					"'side=RIGHT'",
+				}
+				Job:new({
+					command = "gh",
+					args = args,
+					on_exit = function(j, return_val)
+						if return_val ~= 0 then
+							vim.notify(vim.inspect(j:result()))
+							vim.notify("Error running gh reply command. Is a gh cli installed?")
+						end
+
+						callback(return_val ~= 0)
+					end,
+				}):start()
+			end))
+		end))
 	end))
 end
 

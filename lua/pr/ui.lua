@@ -285,7 +285,8 @@ function M.make_popup(thread, comment, enter)
 		end
 	end)
 
-	local body = vim.fn.split(comment.body, "\r\n")
+	local b = comment.body:gsub("\r", "")
+	local body = vim.fn.split(b, "\n")
 	local emojis = M.format_reaction(comment.reaction_groups)
 	-- FIXME: fix hardcode
 	local body_width = 78
@@ -321,8 +322,11 @@ end
 
 -- TODO: make templates
 ---
+---@param enter? boolean
 ---@return NuiPopup
-function M.make_new_reply_popup()
+function M.make_new_reply_popup(enter)
+	enter = enter or false
+	-- FIXME: use gh.get_git_user
 	local reply_popup = Popup({
 		border = {
 			padding = {
@@ -345,10 +349,15 @@ function M.make_new_reply_popup()
 		win_options = {
 			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
 		},
-		enter = false,
+		enter = enter,
 	})
 
-	reply_popup:on(event.BufEnter, function()
+	local buf_enter_event = { event.BufEnter }
+	if enter then
+		table.insert(buf_enter_event, event.BufWinEnter)
+	end
+
+	reply_popup:on(buf_enter_event, function()
 		reply_popup.border:set_highlight(popup_hl)
 		reply_popup.border:set_text("bottom", " [ 󰌑 Submit ] ", "right")
 	end)
@@ -364,10 +373,57 @@ function M.make_new_reply_popup()
 	return reply_popup
 end
 
+---@param lines string[]
+---@param ft string
+---@return NuiPopup
+function M.make_code_reference_popup(lines, ft)
+	local popup = Popup({
+		border = {
+			padding = {
+				top = 0,
+				bottom = 0,
+				left = 0,
+				right = 0,
+			},
+			style = "rounded",
+			text = {
+				top = "Highlighted lines",
+				top_align = "left",
+			},
+		},
+		buf_options = {
+			modifiable = false,
+			readonly = true,
+			filetype = ft,
+		},
+		win_options = {
+			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
+		},
+		enter = false,
+	})
+
+	popup:on(event.BufEnter, function()
+		popup.border:set_highlight(popup_hl)
+	end)
+
+	popup:on(event.BufLeave, function()
+		popup.border:set_highlight("FloatBorder")
+	end)
+
+	vim.api.nvim_buf_set_lines(popup.bufnr, 0, #lines, false, lines)
+
+	return popup
+end
+
 ---
----@param popups NuiPopup[]
+---@param thread ReviewThread
 ---@return NuiLayout
-function M.make_layout(popups)
+function M.make_comments_layout(thread)
+	local popups = {}
+	for i, comment in ipairs(thread.comments) do
+		table.insert(popups, M.make_popup(thread, comment, i == 1))
+	end
+
 	local comment_boxes = {}
 	for _, popup in ipairs(popups) do
 		local lines = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
@@ -377,6 +433,25 @@ function M.make_layout(popups)
 
 	gh.get_git_user()
 	local new_comment_popup = M.make_new_reply_popup()
+
+	new_comment_popup:map("n", "<CR>", function()
+		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
+		local _, first_comment = next(thread.comments)
+		if first_comment == nil then
+			return
+		end
+
+		gh.reply(
+			first_comment.database_id,
+			table.concat(body, "\n"),
+			vim.schedule_wrap(function(success)
+				if success then
+					vim.notify("Reply submitted")
+				end
+			end)
+		)
+	end)
+
 	local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
 
 	table.insert(popups, new_comment_popup)
@@ -396,20 +471,105 @@ function M.make_layout(popups)
 			layout:unmount()
 		end)
 
-		popup:map("n", "j", function()
+		popup:map("n", { "j", "<Down>", "<C-n>" }, function()
 			if i == #popups then
 				return
 			end
 			vim.api.nvim_set_current_win(popups[i + 1].winid)
 		end)
 
-		popup:map("n", "k", function()
+		popup:map("n", { "k", "<Up>", "<C-p>" }, function()
 			if i == 1 then
 				return
 			end
 			vim.api.nvim_set_current_win(popups[i - 1].winid)
 		end)
 	end
+
+	return layout
+end
+
+---
+---@param lines string[]
+---@param ft string
+---@param relative_path string
+---@param start_line integer
+---@param end_line integer
+---@return NuiLayout
+function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_line)
+	local comment_reference_popup = M.make_code_reference_popup(lines, ft)
+	local comment_boxes = {}
+
+	local popups = {}
+	local l = vim.api.nvim_buf_get_lines(comment_reference_popup.bufnr, 0, -1, true)
+	table.insert(comment_boxes, Layout.Box(comment_reference_popup, { size = #l }))
+	table.insert(popups, comment_reference_popup)
+
+	gh.get_git_user()
+	local new_comment_popup = M.make_new_reply_popup(true)
+	new_comment_popup:map("n", "<CR>", function()
+		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
+		gh.comment(
+			relative_path,
+			start_line,
+			end_line,
+			table.concat(body, "\n"),
+			vim.schedule_wrap(function(success)
+				if success then
+					vim.notify("Comment submitted")
+				end
+			end)
+		)
+	end)
+
+	local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
+
+	table.insert(popups, new_comment_popup)
+	table.insert(comment_boxes, new_comment_box)
+
+	local layout = Layout({
+		position = "50%",
+		size = {
+			width = 80,
+			height = "60%",
+		},
+	}, Layout.Box(comment_boxes, { dir = "col" }))
+
+	-- set keymaps for comment popups
+	for i, popup in ipairs(popups) do
+		popup:map("n", "q", function()
+			layout:unmount()
+		end)
+
+		popup:map("n", { "j", "<Down>", "<C-n>" }, function()
+			if i == #popups then
+				return
+			end
+			vim.api.nvim_set_current_win(popups[i + 1].winid)
+		end)
+
+		popup:map("n", { "k", "<Up>", "<C-p>" }, function()
+			if i == 1 then
+				return
+			end
+			vim.api.nvim_set_current_win(popups[i - 1].winid)
+		end)
+	end
+
+	new_comment_popup:map("n", "<CR>", function()
+		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
+		gh.comment(
+			relative_path,
+			start_line,
+			end_line,
+			table.concat(body, "\n"),
+			vim.schedule_wrap(function(success)
+				if success then
+					vim.notify("Comment submitted")
+				end
+			end)
+		)
+	end)
 
 	return layout
 end

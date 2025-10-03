@@ -365,11 +365,7 @@ function M.popup(relative_path, line)
 			for _, thread in ipairs(comments) do
 				local _, first_comment = next(thread.comments)
 				if first_comment and first_comment.start_line <= line and first_comment.end_line >= line then
-					local popups = {}
-					for i, comment in ipairs(thread.comments) do
-						table.insert(popups, ui.make_popup(thread, comment, i == 1))
-					end
-					local layout = ui.make_layout(popups)
+					local layout = ui.make_comments_layout(thread)
 					layout:mount()
 					break
 				end
@@ -425,12 +421,43 @@ function M.cycle_comments_in_buffer(direction, relative_path, line)
 
 			if direction == "forward" then
 				vim.api.nvim_win_set_cursor(0, { after_line or before_line, 0 })
-				vim.notify("Comment " .. after_index or before_index .. " of " .. #comments)
+				vim.notify("Comment " .. (after_index or before_index) .. " of " .. #comments)
 			elseif direction == "backward" then
 				vim.api.nvim_win_set_cursor(0, { before_line or after_line, 0 })
-				vim.notify("Comment " .. before_index or after_index .. " of " .. #comments)
+				vim.notify("Comment " .. (before_index or after_index) .. " of " .. #comments)
 			end
 		end))
+	end))
+end
+
+---
+---@param relative_path? string
+---@param start_line? integer
+---@param end_line? integer
+function M.comment(relative_path, start_line, end_line)
+	gh.get_git_root(vim.schedule_wrap(function(git_root)
+		if git_root == nil or git_root == "" then
+			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
+			return
+		end
+
+		local buf = vim.api.nvim_get_current_buf()
+		local buffer_path = vim.api.nvim_buf_get_name(buf)
+		local ft = vim.bo.filetype
+		if buffer_path == "" then
+			return
+		end
+		relative_path = relative_path or buffer_path:sub(#git_root + 2)
+
+		vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<esc>", true, false, true), "x", true)
+		start_line = vim.fn.line("'<")
+		end_line = vim.fn.line("'>")
+
+		local lines = vim.api.nvim_buf_get_text(buf, start_line - 1, 0, end_line + 1, -1, {})
+		local layout = ui.make_new_comment_layout(lines, ft, relative_path, start_line, end_line)
+		layout:mount()
+
+		vim.cmd("startinsert")
 	end))
 end
 
