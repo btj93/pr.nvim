@@ -10,6 +10,13 @@ local gh = require("pr.providers.gh")
 
 local M = {}
 
+---@type table<integer, Draft>
+---@class Draft
+---@field body string
+---@field updated_at string
+-- TODO: validate with version number
+M.drafts = {}
+
 local popup_hl = "PRCommentPopup"
 local hl_emoji = "PREmojiLine"
 local comment_sep = "PRCommentSeparator"
@@ -227,7 +234,7 @@ M.reply_actions = {
 ---@param comment CommentInfo
 ---@param enter boolean
 ---@return NuiPopup
-function M.make_popup(thread, comment, enter)
+function M.make_comment_popup(thread, comment, enter)
 	local author_display = comment.author
 	if comment.viewer_did_author then
 		author_display = author_display .. " (you)"
@@ -248,9 +255,8 @@ function M.make_popup(thread, comment, enter)
 			},
 		},
 		buf_options = {
-			-- FIXME: user can edit emoji lines
 			modifiable = comment.viewer_can_update,
-			readonly = true,
+			readonly = not comment.viewer_can_update,
 			filetype = "markdown",
 		},
 		win_options = {
@@ -273,10 +279,10 @@ function M.make_popup(thread, comment, enter)
 			end
 		end
 
-		-- FIXME: menu text should be dynamic
 		local menu = " " .. table.concat(menus, " | ") .. " "
 		popup.border:set_text("bottom", menu, "right")
 	end)
+
 	popup:on(event.BufLeave, function()
 		popup.border:set_highlight("FloatBorder")
 		-- don't set text if popup is closing
@@ -292,22 +298,34 @@ function M.make_popup(thread, comment, enter)
 	local body_width = 78
 	local emojis_width = vim.fn.strdisplaywidth(emojis)
 
-	table.insert(body, (" "):rep(body_width))
-	table.insert(body, emojis .. (" "):rep(body_width - emojis_width))
-
 	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, body)
 
-	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body - 2, 0, {
-		end_col = 0,
-		end_line = #body - 1,
-		hl_group = comment_sep,
+	vim.api.nvim_buf_set_extmark(popup.bufnr, COMMENTS_NS_ID, #body - 1, -1, {
+		virt_lines = {
+			{ { (" "):rep(body_width), comment_sep } },
+			{ { emojis .. (" "):rep(body_width - emojis_width), "StatusLine" } },
+		},
 	})
 
-	vim.api.nvim_buf_set_extmark(popup.bufnr, popup.ns_id, #body - 1, 0, {
-		end_col = 0,
-		end_line = #body,
-		hl_group = "StatusLine",
-	})
+	if comment.viewer_can_update then
+		popup:on({ event.TextChanged, event.TextChangedI }, function()
+			local new_body = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
+			if new_body == body then
+				return
+			end
+
+			local draft = M.drafts[comment.database_id] or {}
+			if draft.updated_at and draft.updated_at ~= comment.updated_at then
+				vim.notify("TODO: implement")
+				return
+			end
+
+			M.drafts[comment.database_id] = {
+				body = new_body,
+				updated_at = comment.updated_at,
+			}
+		end)
+	end
 
 	for k, action in pairs(M.actions) do
 		if action.key then
@@ -330,8 +348,8 @@ function M.make_new_reply_popup(enter)
 	local reply_popup = Popup({
 		border = {
 			padding = {
-				top = 1,
-				bottom = 1,
+				top = 0,
+				bottom = 0,
 				left = 1,
 				right = 1,
 			},
@@ -420,42 +438,49 @@ end
 ---@return NuiLayout
 function M.make_comments_layout(thread)
 	local popups = {}
-	for i, comment in ipairs(thread.comments) do
-		table.insert(popups, M.make_popup(thread, comment, i == 1))
-	end
-
 	local comment_boxes = {}
-	for _, popup in ipairs(popups) do
+
+	for i, comment in ipairs(thread.comments) do
+		local popup = M.make_comment_popup(thread, comment, i == 1)
+		table.insert(popups, popup)
+
 		local lines = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
 		-- padding
-		table.insert(comment_boxes, Layout.Box(popup, { size = #lines }))
+		local box = Layout.Box(popup, { size = #lines })
+		table.insert(comment_boxes, box)
 	end
 
+	comment_boxes = { Layout.Box(comment_boxes, { dir = "col", size = "60%" }) }
+
 	gh.get_git_user()
-	local new_comment_popup = M.make_new_reply_popup()
+	if thread.viewer_can_reply then
+		local new_comment_popup = M.make_new_reply_popup()
 
-	new_comment_popup:map("n", "<CR>", function()
-		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
-		local _, first_comment = next(thread.comments)
-		if first_comment == nil then
-			return
-		end
+		new_comment_popup:map("n", "<CR>", function()
+			local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
+			local _, first_comment = next(thread.comments)
+			if first_comment == nil then
+				return
+			end
 
-		gh.reply(
-			first_comment.database_id,
-			table.concat(body, "\n"),
-			vim.schedule_wrap(function(success)
-				if success then
-					vim.notify("Reply submitted")
-				end
-			end)
-		)
-	end)
+			gh.reply(
+				first_comment.database_id,
+				table.concat(body, "\n"),
+				vim.schedule_wrap(function(success)
+					if success then
+						vim.notify("Reply submitted")
+					end
+				end)
+			)
 
-	local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
+			-- TODO: spinner
+		end)
 
-	table.insert(popups, new_comment_popup)
-	table.insert(comment_boxes, new_comment_box)
+		local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
+
+		table.insert(popups, new_comment_popup)
+		table.insert(comment_boxes, new_comment_box)
+	end
 
 	local layout = Layout({
 		position = "50%",
@@ -483,6 +508,40 @@ function M.make_comments_layout(thread)
 				return
 			end
 			vim.api.nvim_set_current_win(popups[i - 1].winid)
+		end)
+
+		-- re-render all comments if either one is updated
+		popup:on({ event.TextChanged, event.TextChangedI }, function()
+			for sib, sibling in ipairs(popups) do
+				local new_body = vim.api.nvim_buf_get_lines(sibling.bufnr, 0, -1, true)
+				if sib == 1 then
+					sibling:update_layout({
+						size = {
+							-- FIXME: fix hardcode
+							width = 78,
+							height = #new_body + 2,
+						},
+					})
+				else
+					local prev_buf = popups[sib - 1]
+					local prev_buf_lines = vim.api.nvim_buf_get_lines(prev_buf.bufnr, 0, -1, true)
+					sibling:update_layout({
+						relative = {
+							type = "win",
+							winid = prev_buf.winid,
+						},
+						position = {
+							row = #prev_buf_lines + 4,
+							col = 0,
+						},
+						size = {
+							-- FIXME: fix hardcode
+							width = 78,
+							height = (sib == #popups and 5) or #new_body + 2,
+						},
+					})
+				end
+			end
 		end)
 	end
 
@@ -670,11 +729,11 @@ function M.format_reaction(reaction_group)
 		if reaction.reactors.totalCount > 0 then
 			table.insert(
 				reactions,
-				"   ( " .. reaction_contents[reaction.content] .. " " .. reaction.reactors.totalCount .. " )"
+				"( " .. reaction_contents[reaction.content] .. " " .. reaction.reactors.totalCount .. " )"
 			)
 		end
 	end
-	return table.concat(reactions, " | ")
+	return "   " .. table.concat(reactions, " | ")
 end
 
 ---

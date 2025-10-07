@@ -59,7 +59,6 @@ return {
 
 - [ ] Add support for other git providers
 - [ ] Add support for other pickers
-- [ ] Visual mode select lines to comment
 - [ ] Visual mode select comment to quote reply
 - [ ] PR explorer
 - [ ] Switch to a PR branch
@@ -67,3 +66,4 @@ return {
 - [ ] Auto refresh PR comments when changing branches
 - [ ] Auto refresh PR comments by interval
 - [ ] Auto refresh PR comments by autocmd
+- [ ] Local comment drafts

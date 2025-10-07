@@ -7,10 +7,6 @@ M.enabled = false
 M.bufs = {}
 M.wins = {}
 
----@type table<string, string>
--- TODO: validate with version number
-M.drafts = {}
-
 M.opts = {
 	virtual_text = true,
 	virtual_line = true,
@@ -45,7 +41,7 @@ local comments_active = false
 
 -- Namespaces and Groups
 local diff_ns_id = vim.api.nvim_create_namespace("PRDiffHighlights")
-local comments_ns_id = vim.api.nvim_create_namespace("PRComments")
+COMMENTS_NS_ID = vim.api.nvim_create_namespace("PRComments")
 
 -- Function to clear all the diff highlights for the current buffer
 local function clear_highlights()
@@ -137,7 +133,7 @@ function M.toggle_diff()
 end
 
 local function clear_comments()
-	vim.api.nvim_buf_clear_namespace(0, comments_ns_id, 0, -1)
+	vim.api.nvim_buf_clear_namespace(0, COMMENTS_NS_ID, 0, -1)
 	vim.api.nvim_echo({ { "PR comments hidden.", "InfoMsg" } }, true, {})
 end
 
@@ -204,16 +200,15 @@ function M.draw(buf)
 		end
 
 		if M.opts.virtual_text then
-			vim.api.nvim_buf_set_extmark(buf, comments_ns_id, end_line - 1, -1, {
+			vim.api.nvim_buf_set_extmark(buf, COMMENTS_NS_ID, end_line - 1, -1, {
 				virt_text = c,
 				virt_text_pos = "eol",
 			})
 		end
 
 		if M.opts.virtual_line then
-			vim.api.nvim_buf_set_extmark(buf, comments_ns_id, end_line - 1, -1, {
+			vim.api.nvim_buf_set_extmark(buf, COMMENTS_NS_ID, end_line - 1, -1, {
 				virt_lines = { c },
-				virt_text_pos = "eol",
 			})
 		end
 
@@ -435,6 +430,7 @@ end
 ---@param start_line? integer
 ---@param end_line? integer
 function M.comment(relative_path, start_line, end_line)
+	-- TODO: permission check
 	gh.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
@@ -466,7 +462,7 @@ function M.stop()
 	M.wins = {}
 	for buf, _ in pairs(M.bufs) do
 		vim.api.nvim_buf_clear_namespace(buf, diff_ns_id, 0, -1)
-		vim.api.nvim_buf_clear_namespace(buf, comments_ns_id, 0, -1)
+		vim.api.nvim_buf_clear_namespace(buf, COMMENTS_NS_ID, 0, -1)
 	end
 	M.bufs = {}
 	gh.clear()

@@ -25,6 +25,7 @@ M.pr_number = 0
 --- @field author string
 --- @field body string
 --- @field published_at string
+--- @field updated_at string
 --- @field viewer_did_author boolean
 --- @field start_line integer
 --- @field end_line integer
@@ -226,6 +227,7 @@ function M.get_comments(callback)
                       body
                       path
                       publishedAt
+                      updatedAt
                       viewerDidAuthor
                       viewerCanUpdate
                       viewerCanDelete
@@ -362,6 +364,7 @@ function M.get_comments(callback)
 									viewer_can_delete = comment.viewerCanDelete,
 									reaction_groups = comment.reactionGroups,
 									published_at = comment.publishedAt,
+									updated_at = comment.updatedAt,
 									viewer_did_author = comment.viewerDidAuthor,
 								})
 							end
@@ -690,6 +693,57 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 					end,
 				}):start()
 			end))
+		end))
+	end))
+end
+
+---
+---@param comment_id integer
+---@param body string
+---@param callback function(success: boolean)
+function M.edit_comment(comment_id, body, callback)
+	callback = callback or function(_) end
+
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
+
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			-- gh api \
+			--   --method PATCH \
+			--   -H "Accept: application/vnd.github+json" \
+			--   -H "X-GitHub-Api-Version: 2022-11-28" \
+			--   /repos/OWNER/REPO/pulls/comments/COMMENT_ID \
+			--    -f 'body=I like this too!'
+
+			local args = {
+				"api",
+				"--method",
+				"PATCH",
+				"-H",
+				"'Accept: application/vnd.github+json'",
+				"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments/" .. comment_id,
+				"-f",
+				"body=" .. body,
+			}
+			Job:new({
+				command = "gh",
+				args = args,
+				on_exit = function(j, return_val)
+					if return_val ~= 0 then
+						vim.notify(vim.inspect(j:result()))
+						vim.notify("Error running gh edit comment command. Is a gh cli installed?")
+					end
+
+					callback(return_val ~= 0)
+				end,
+			}):start()
 		end))
 	end))
 end
