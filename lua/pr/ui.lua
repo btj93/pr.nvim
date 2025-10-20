@@ -151,18 +151,26 @@ M.actions = {
 		end,
 	},
 	save = {
-		-- FIXME: keymap
 		mode = "n",
-		key = nil,
+		key = "s",
 		menu_text = "Save",
 		menu_desc = "Save edited comment",
-		popup_hint = "",
+		popup_hint = "([S]ave edited)",
 		show_hint = false,
 		can_perform = function(_, comment)
-			-- TODO: check comment is edited
+			local draft = M.drafts[comment.database_id] or {}
+			return draft.body and draft.updated_at
 		end,
-		perform = function(thread, comment, popup_winid)
-			vim.notify("TODO: implement")
+		perform = function(_, comment, _)
+			gh.edit_comment(
+				comment.database_id,
+				comment.body,
+				vim.schedule_wrap(function(success)
+					if success then
+						vim.notify("Comment saved")
+					end
+				end)
+			)
 		end,
 	},
 	delete = {
@@ -279,6 +287,7 @@ function M.make_comment_popup(thread, comment, enter)
 			end
 		end
 
+		-- TODO: update menu on comment edit and mode change
 		local menu = " " .. table.concat(menus, " | ") .. " "
 		popup.border:set_text("bottom", menu, "right")
 	end)

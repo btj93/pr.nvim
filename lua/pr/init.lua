@@ -75,6 +75,18 @@ local function place_highlights()
 	local line_num_in_buffer = 0
 	local highlights_placed = 0
 
+	---@type Hunk[]
+	---@class Hunk
+	---@field hunk_start integer
+	---@field hunk_end integer
+	---@field type "Add"|"Change"|"Del"
+	local hunks = {}
+
+	local has_add = false
+	local has_del = false
+	local hunk_start = 0
+	local hunk_end = 0
+
 	for _, line in ipairs(diff_lines) do
 		-- Check for the start of a new file's diff
 		local diff_file = line:match("^diff %-%-git a/.+ b/(.+)$")
@@ -86,30 +98,76 @@ local function place_highlights()
 		if current_file_diff then
 			local start_line_str = line:match("^@@ %-.+ %+([0-9]+)")
 			if start_line_str then
+				if hunk_start > 0 then
+					hunk_end = hunk_end or line_num_in_buffer - 1
+					table.insert(hunks, {
+						hunk_start = hunk_start,
+						hunk_end = hunk_end,
+						type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
+					})
+				end
 				-- The line number from the hunk refers to the first line of the new content.
 				-- We adjust it to be the line *before* the first hunk line, so our
 				-- counter is correct after the first increment.
 				line_num_in_buffer = tonumber(start_line_str) - 1
+				has_add = false
+				has_del = false
+				hunk_start = 0
+				hunk_end = 0
 			end
 
 			-- Only process diff lines after a hunk header has been found for this file
 			if line_num_in_buffer >= 0 then
 				if line:sub(1, 1) == "+" then
+					if hunk_start == 0 then
+						hunk_start = line_num_in_buffer
+					end
 					line_num_in_buffer = line_num_in_buffer + 1
-					vim.api.nvim_buf_add_highlight(0, diff_ns_id, "PRDiffAdd", line_num_in_buffer - 1, 0, -1)
+					has_add = true
 					highlights_placed = highlights_placed + 1
 				elseif line:sub(1, 1) == " " then
+					if hunk_start > 0 then
+						hunk_end = line_num_in_buffer - 1
+						table.insert(hunks, {
+							hunk_start = hunk_start,
+							hunk_end = hunk_end,
+							type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
+						})
+
+						has_add = false
+						has_del = false
+						hunk_start = 0
+						hunk_end = 0
+					end
 					line_num_in_buffer = line_num_in_buffer + 1
 				elseif line:sub(1, 1) == "-" then
+					if hunk_start == 0 then
+						hunk_start = line_num_in_buffer
+					end
 					-- A deleted line doesn't exist in the buffer, so we don't increment the line counter.
 					-- We highlight the line before the deletion, if possible.
-					if line_num_in_buffer > 0 then
-						vim.api.nvim_buf_add_highlight(0, diff_ns_id, "PRDiffDelete", line_num_in_buffer - 1, 0, -1)
-						highlights_placed = highlights_placed + 1
-					end
+					has_del = true
 				end
 			end
 		end
+	end
+
+	if hunk_start > 0 then
+		hunk_end = hunk_end or line_num_in_buffer - 1
+		table.insert(hunks, {
+			hunk_start = hunk_start,
+			hunk_end = hunk_end,
+			type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
+		})
+	end
+
+	for _, hunk in ipairs(hunks) do
+		vim.notify(vim.inspect(hunk))
+		vim.api.nvim_buf_set_extmark(0, diff_ns_id, hunk.hunk_start, 0, {
+			line_hl_group = "PRDiff" .. hunk.type,
+			end_row = hunk.hunk_end,
+			end_col = 0,
+		})
 	end
 
 	if M.opts.debug then
@@ -513,6 +571,7 @@ function M.setup(opts)
 	-- vim.api.nvim_set_hl(0, "DiffDelete", { fg = "Red" })
 	vim.api.nvim_set_hl(0, sign_hl, { fg = "LightBlue" })
 	vim.api.nvim_set_hl(0, "PRDiffAdd", { bg = "#40531b" })
+	vim.api.nvim_set_hl(0, "PRDiffChange", { bg = "#2a3a57" })
 	vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
 	vim.api.nvim_set_hl(0, sign_comment, { fg = "Grey", italic = true })
 	vim.api.nvim_set_hl(0, hl_comment, { bg = "LightBlue" })
