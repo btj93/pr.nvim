@@ -11,7 +11,6 @@ M.wins = {}
 
 -- Namespaces and Groups
 local diff_ns_id = config.opts.diff_ns_id
-local COMMENTS_NS_ID = config.opts.comments_ns_id
 
 -- Function to clear all the diff highlights for the current buffer
 local function clear_highlights()
@@ -62,7 +61,7 @@ function M.toggle_diff()
 end
 
 local function clear_comments()
-	vim.api.nvim_buf_clear_namespace(0, COMMENTS_NS_ID, 0, -1)
+	vim.api.nvim_buf_clear_namespace(0, config.opts.comments_ns_id, 0, -1)
 	vim.api.nvim_echo({ { "PR comments hidden.", "InfoMsg" } }, true, {})
 end
 
@@ -147,14 +146,14 @@ function M.draw(buf)
 		end
 
 		if config.opts.virtual_text then
-			vim.api.nvim_buf_set_extmark(buf, COMMENTS_NS_ID, end_line - 1, -1, {
+			vim.api.nvim_buf_set_extmark(buf, config.opts.comments_ns_id, end_line - 1, -1, {
 				virt_text = c,
 				virt_text_pos = "eol",
 			})
 		end
 
 		if config.opts.virtual_line then
-			vim.api.nvim_buf_set_extmark(buf, COMMENTS_NS_ID, end_line - 1, -1, {
+			vim.api.nvim_buf_set_extmark(buf, config.opts.comments_ns_id, end_line - 1, -1, {
 				virt_lines = { c },
 			})
 		end
@@ -204,7 +203,7 @@ end
 ---@param buf integer
 ---@return boolean
 function M.is_quickfix(buf)
-	return vim.api.nvim_buf_get_option(buf, "buftype") == "quickfix"
+	return vim.api.nvim_get_option_value("buftype", { buf = buf }) == "quickfix"
 end
 
 ---
@@ -212,7 +211,7 @@ end
 ---@return boolean
 function M.is_valid_buf(buf)
 	-- Skip special buffers
-	local buftype = vim.api.nvim_buf_get_option(buf, "buftype")
+	local buftype = vim.api.nvim_get_option_value("buftype", { buf = buf })
 	if buftype ~= "" and buftype ~= "quickfix" then
 		return false
 	end
@@ -463,7 +462,7 @@ function M.stop()
 	M.wins = {}
 	for buf, _ in pairs(M.bufs) do
 		vim.api.nvim_buf_clear_namespace(buf, diff_ns_id, 0, -1)
-		vim.api.nvim_buf_clear_namespace(buf, COMMENTS_NS_ID, 0, -1)
+		vim.api.nvim_buf_clear_namespace(buf, config.opts.comments_ns_id, 0, -1)
 	end
 	M.bufs = {}
 	gh.clear()

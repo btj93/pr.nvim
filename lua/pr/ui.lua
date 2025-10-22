@@ -311,7 +311,7 @@ function M.make_comment_popup(thread, comment, enter)
 
 	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, body)
 
-	vim.api.nvim_buf_set_extmark(popup.bufnr, COMMENTS_NS_ID, #body - 1, -1, {
+	vim.api.nvim_buf_set_extmark(popup.bufnr, config.opts.comments_ns_id, #body - 1, -1, {
 		virt_lines = {
 			{ { (" "):rep(body_width), comment_sep } },
 			{ { emojis .. (" "):rep(body_width - emojis_width), "StatusLine" } },
