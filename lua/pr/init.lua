@@ -1,6 +1,6 @@
 local provider = require("pr.provider")
 local config = require("pr.config")
-local gh = provider.get_provider(config.opts)
+local git = provider.get_provider(config.opts)
 local ui = require("pr.ui")
 
 local M = {}
@@ -9,37 +9,30 @@ M.enabled = false
 M.bufs = {}
 M.wins = {}
 
--- Namespaces and Groups
-local diff_ns_id = config.opts.diff_ns_id
-
--- Function to clear all the diff highlights for the current buffer
-local function clear_highlights()
-	vim.api.nvim_buf_clear_namespace(0, diff_ns_id, 0, -1)
-	vim.api.nvim_echo({ { "PR diff highlights removed.", "InfoMsg" } }, true, {})
-end
-
 -- Function to get the diff and place the highlights
-local function place_highlights()
-	local buffer_path = vim.api.nvim_buf_get_name(0)
+function M.place_highlights(buf)
+	-- vim.notify("place_highlights")
+	buf = buf or vim.api.nvim_get_current_buf()
+	local buffer_path = vim.api.nvim_buf_get_name(buf)
 	if buffer_path == "" then
 		vim.api.nvim_echo({ { "Cannot get diff for an unnamed buffer.", "WarningMsg" } }, true, {})
 		return
 	end
 
-	gh.get_git_root(vim.schedule_wrap(function(git_root)
+	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
 		end
 
 		local relative_path = buffer_path:sub(#git_root + 2)
-		gh.get_hunks(vim.schedule_wrap(function(hunks)
+		git.get_hunks(vim.schedule_wrap(function(hunks)
 			hunks = hunks[relative_path] or {}
 			for _, hunk in ipairs(hunks) do
-				vim.notify(vim.inspect(hunk))
+				-- vim.notify(vim.inspect(hunk))
 
 				-- 0 indexed
-				vim.api.nvim_buf_set_extmark(0, diff_ns_id, hunk.hunk_start - 1, 0, {
+				vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.diff_ns_id, hunk.hunk_start - 1, 0, {
 					line_hl_group = "PRDiff" .. hunk.type,
 					end_row = hunk.hunk_end - 1,
 					end_col = 0,
@@ -49,19 +42,8 @@ local function place_highlights()
 	end))
 end
 
--- The main toggle function called by the user command
-function M.toggle_diff()
-	if highlights_active then
-		clear_highlights()
-		highlights_active = false
-	else
-		place_highlights()
-		highlights_active = true
-	end
-end
-
 local function clear_comments()
-	vim.api.nvim_buf_clear_namespace(0, config.opts.comments_ns_id, 0, -1)
+	vim.api.nvim_buf_clear_namespace(0, config.opts.highlights.comments_ns_id, 0, -1)
 	vim.api.nvim_echo({ { "PR comments hidden.", "InfoMsg" } }, true, {})
 end
 
@@ -82,7 +64,7 @@ function M.draw(buf)
 	end
 
 	local comments_placed = 0
-	gh.get_git_root(vim.schedule_wrap(function(git_root)
+	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
@@ -93,7 +75,7 @@ function M.draw(buf)
 		local c = {}
 
 		local relative_path = buffer_path:sub(#git_root + 2)
-		local comments = gh.comments[relative_path] or {}
+		local comments = git.comments[relative_path] or {}
 		if next(comments) == nil then
 			if config.opts.debug then
 				vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
@@ -118,42 +100,48 @@ function M.draw(buf)
 		end
 
 		if start_line == end_line then
-			vim.fn.sign_place(0, config.opts.sign_group, config.opts.sign_comment, buf, { lnum = end_line })
+			vim.fn.sign_place(
+				0,
+				config.opts.highlights.sign_group,
+				config.opts.highlights.sign_comment,
+				buf,
+				{ lnum = end_line }
+			)
 		else
 			vim.fn.sign_place(
 				0,
-				config.opts.sign_group,
-				config.opts.sign_comment_multi_line_start,
+				config.opts.highlights.sign_group,
+				config.opts.highlights.sign_comment_multi_line_start,
 				buf,
 				{ lnum = start_line }
 			)
 			for i = start_line + 1, end_line - 1 do
 				vim.fn.sign_place(
 					0,
-					config.opts.sign_group,
-					config.opts.sign_comment_multi_line_connector,
+					config.opts.highlights.sign_group,
+					config.opts.highlights.sign_comment_multi_line_connector,
 					buf,
 					{ lnum = i }
 				)
 			end
 			vim.fn.sign_place(
 				0,
-				config.opts.sign_group,
-				config.opts.sign_comment_multi_line_end,
+				config.opts.highlights.sign_group,
+				config.opts.highlights.sign_comment_multi_line_end,
 				buf,
 				{ lnum = end_line }
 			)
 		end
 
 		if config.opts.virtual_text then
-			vim.api.nvim_buf_set_extmark(buf, config.opts.comments_ns_id, end_line - 1, -1, {
+			vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
 				virt_text = c,
 				virt_text_pos = "eol",
 			})
 		end
 
 		if config.opts.virtual_line then
-			vim.api.nvim_buf_set_extmark(buf, config.opts.comments_ns_id, end_line - 1, -1, {
+			vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
 				virt_lines = { c },
 			})
 		end
@@ -246,6 +234,7 @@ function M.attach(win)
 				end
 
 				M.draw(buf)
+				M.place_highlights(buf)
 			end,
 			on_detach = function()
 				M.bufs[buf] = nil
@@ -253,6 +242,7 @@ function M.attach(win)
 		})
 
 		M.draw(buf)
+		M.place_highlights(buf)
 
 		-- local highlighter = require("vim.treesitter.highlighter")
 		-- local hl = highlighter.active[buf]
@@ -285,7 +275,7 @@ end
 ---@param line integer?
 function M.popup(relative_path, line)
 	-- TODO: check gh.get_comments is done
-	gh.get_git_root(vim.schedule_wrap(function(git_root)
+	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
@@ -300,7 +290,7 @@ function M.popup(relative_path, line)
 		local row, _ = unpack(vim.api.nvim_win_get_cursor(0))
 		line = line or row
 
-		gh.get_comments(vim.schedule_wrap(function(comments)
+		git.get_comments(vim.schedule_wrap(function(comments)
 			comments = comments[relative_path] or {}
 
 			for _, thread in ipairs(comments) do
@@ -320,7 +310,7 @@ end
 ---@param relative_path string?
 ---@param line integer?
 function M.cycle_comments_in_buffer(direction, relative_path, line)
-	gh.get_git_root(vim.schedule_wrap(function(git_root)
+	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
@@ -335,7 +325,7 @@ function M.cycle_comments_in_buffer(direction, relative_path, line)
 		local row, _ = unpack(vim.api.nvim_win_get_cursor(0))
 		line = line or row
 
-		gh.get_comments(vim.schedule_wrap(function(comments)
+		git.get_comments(vim.schedule_wrap(function(comments)
 			comments = comments[relative_path] or {}
 
 			if #comments == 0 then
@@ -376,7 +366,7 @@ end
 ---@param relative_path string?
 ---@param line integer?
 function M.cycle_hunks_in_buffer(direction, relative_path, line)
-	gh.get_git_root(vim.schedule_wrap(function(git_root)
+	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
@@ -392,7 +382,7 @@ function M.cycle_hunks_in_buffer(direction, relative_path, line)
 		line = line or row
 
 		---@param hunks Hunks
-		gh.get_hunks(vim.schedule_wrap(function(hunks)
+		git.get_hunks(vim.schedule_wrap(function(hunks)
 			hunks = hunks[relative_path] or {}
 
 			if #hunks == 0 then
@@ -431,7 +421,7 @@ end
 ---@param end_line? integer
 function M.comment(relative_path, start_line, end_line)
 	-- TODO: permission check
-	gh.get_git_root(vim.schedule_wrap(function(git_root)
+	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
 			return
@@ -461,12 +451,12 @@ function M.stop()
 	M.enabled = false
 	M.wins = {}
 	for buf, _ in pairs(M.bufs) do
-		vim.api.nvim_buf_clear_namespace(buf, diff_ns_id, 0, -1)
-		vim.api.nvim_buf_clear_namespace(buf, config.opts.comments_ns_id, 0, -1)
+		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.diff_ns_id, 0, -1)
+		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.comments_ns_id, 0, -1)
 	end
 	M.bufs = {}
-	gh.clear()
-	vim.fn.sign_unplace(config.opts.sign_group)
+	git.clear()
+	vim.fn.sign_unplace(config.opts.highlights.sign_group)
 end
 
 function M.toggle()
@@ -479,22 +469,24 @@ end
 
 function M.start()
 	M.enabled = true
-	gh.get_git_user(vim.schedule_wrap(function(_)
-		gh.get_comments(vim.schedule_wrap(function(_)
-			vim.api.nvim_exec2(
-				[[augroup PRComment
+	git.get_git_user(vim.schedule_wrap(function(_)
+		git.get_hunks(vim.schedule_wrap(function(_)
+			git.get_comments(vim.schedule_wrap(function(_)
+				vim.api.nvim_exec2(
+					[[augroup PRComment
         autocmd!
         autocmd BufWinEnter,WinNew * lua require("pr").attach()
       augroup end]],
-				{ output = false }
-			)
+					{ output = false }
+				)
 
-			-- attach to all bufs in visible windows
-			for _, win in pairs(vim.api.nvim_list_wins()) do
-				if not M.wins[win] then
-					M.attach(win)
+				-- attach to all bufs in visible windows
+				for _, win in pairs(vim.api.nvim_list_wins()) do
+					if not M.wins[win] then
+						M.attach(win)
+					end
 				end
-			end
+			end))
 		end))
 	end))
 end
@@ -505,31 +497,34 @@ function M.setup(opts)
 
 	-- vim.fn.sign_define(sign_add, { text = "+", texthl = "DiffAdd" })
 	-- vim.fn.sign_define(sign_del, { text = "-", texthl = "DiffDelete" })
-	vim.fn.sign_define(config.opts.sign_comment, { text = config.opts.sign, texthl = config.opts.sign_hl })
 	vim.fn.sign_define(
-		config.opts.sign_comment_multi_line_start,
-		{ text = config.opts.multi_line_sign.start_line, texthl = config.opts.sign_hl }
+		config.opts.highlights.sign_comment,
+		{ text = config.opts.sign, texthl = config.opts.highlights.sign_hl }
 	)
 	vim.fn.sign_define(
-		config.opts.sign_comment_multi_line_connector,
-		{ text = config.opts.multi_line_sign.connector, texthl = config.opts.sign_hl }
+		config.opts.highlights.sign_comment_multi_line_start,
+		{ text = config.opts.multi_line_sign.start_line, texthl = config.opts.highlights.sign_hl }
 	)
 	vim.fn.sign_define(
-		config.opts.sign_comment_multi_line_end,
-		{ text = config.opts.multi_line_sign.end_line, texthl = config.opts.sign_hl }
+		config.opts.highlights.sign_comment_multi_line_connector,
+		{ text = config.opts.multi_line_sign.connector, texthl = config.opts.highlights.sign_hl }
+	)
+	vim.fn.sign_define(
+		config.opts.highlights.sign_comment_multi_line_end,
+		{ text = config.opts.multi_line_sign.end_line, texthl = config.opts.highlights.sign_hl }
 	)
 	-- vim.api.nvim_set_hl(0, "DiffAdd", { fg = "Green" })
 	-- vim.api.nvim_set_hl(0, "DiffDelete", { fg = "Red" })
-	vim.api.nvim_set_hl(0, config.opts.sign_hl, { fg = "LightBlue" })
+	vim.api.nvim_set_hl(0, config.opts.highlights.sign_hl, { fg = "LightBlue" })
 	vim.api.nvim_set_hl(0, "PRDiffAdd", { bg = "#40531b" })
 	vim.api.nvim_set_hl(0, "PRDiffChange", { bg = "#2a3a57" })
 	vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
-	vim.api.nvim_set_hl(0, config.opts.sign_comment, { fg = "Grey", italic = true })
-	vim.api.nvim_set_hl(0, config.opts.hl_comment, { bg = "LightBlue" })
+	vim.api.nvim_set_hl(0, config.opts.highlights.sign_comment, { fg = "Grey", italic = true })
+	vim.api.nvim_set_hl(0, config.opts.highlights.hl_comment, { bg = "LightBlue" })
 	-- reddish grey
-	vim.api.nvim_set_hl(0, config.opts.unresolved_text, { bg = "#997570", italic = true })
+	vim.api.nvim_set_hl(0, config.opts.highlights.unresolved_text, { bg = "#997570", italic = true })
 	-- greenish grey
-	vim.api.nvim_set_hl(0, config.opts.resolved_text, { bg = "#82A67D", italic = true })
+	vim.api.nvim_set_hl(0, config.opts.highlights.resolved_text, { bg = "#82A67D", italic = true })
 
 	M.start()
 	ui.setup()

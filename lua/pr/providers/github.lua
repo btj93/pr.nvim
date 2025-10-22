@@ -193,7 +193,6 @@ function M.get_comments(callback)
 		return
 	end
 
-	-- 1. Get dynamic repository and PR info
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
 			vim.api.nvim_echo(
@@ -592,36 +591,50 @@ function M.get_hunks(callback)
 		return
 	end
 
-	local args = {
-		"pr",
-		"diff",
-	}
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
 
-	Job:new({
-		command = "gh",
-		args = args,
-		on_exit = function(j, return_val)
-			if return_val ~= 0 then
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running gh pr diff command. Is a gh cli installed?")
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number then
 				return
 			end
 
-			local diff_lines = j:result()
-			local _, t = next(diff_lines)
-			if not t then
-				vim.notify("No result from gh pr diff command. Is a gh cli installed?")
-				return
-			end
+			Job:new({
+				command = "gh",
+				args = {
+					"pr",
+					"diff",
+				},
+				on_exit = function(j, return_val)
+					if return_val ~= 0 then
+						vim.notify("Error running gh pr diff command. Is a gh cli installed?")
+						return
+					end
 
-			M.hunks = parse_diff_hunks(diff_lines)
+					local diff_lines = j:result()
+					local _, t = next(diff_lines)
+					if not t then
+						vim.notify("No result from gh pr diff command. Is a gh cli installed?")
+						return
+					end
 
-			callback(M.hunks)
-		end,
-	}):start()
+					M.hunks = parse_diff_hunks(diff_lines)
+
+					callback(M.hunks)
+				end,
+			}):start()
+		end))
+	end))
 end
 
----
+--
 ---@param comment_id integer
 ---@param reaction_key string
 ---@param callback function?(success: boolean)

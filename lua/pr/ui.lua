@@ -6,7 +6,8 @@ local Text = require("nui.text")
 local NuiText = require("nui.text")
 local event = require("nui.utils.autocmd").event
 
-local gh = require("pr.provider").get_provider()
+local git = require("pr.provider").get_provider()
+local config = require("pr.config")
 
 local M = {}
 
@@ -16,12 +17,6 @@ local M = {}
 ---@field updated_at string
 -- TODO: validate with version number
 M.drafts = {}
-
-local config = require("pr.config")
-
-local popup_hl = config.opts.popup_hl
-local hl_emoji = config.opts.hl_emoji
-local comment_sep = config.opts.comment_sep
 
 local reaction_contents = {
 	CONFUSED = "😕",
@@ -164,7 +159,7 @@ M.actions = {
 			return draft.body and draft.updated_at
 		end,
 		perform = function(_, comment, _)
-			gh.edit_comment(
+			git.edit_comment(
 				comment.database_id,
 				comment.body,
 				vim.schedule_wrap(function(success)
@@ -281,7 +276,7 @@ function M.make_comment_popup(thread, comment, enter)
 	end
 
 	popup:on(buf_enter_event, function()
-		popup.border:set_highlight(popup_hl)
+		popup.border:set_highlight(config.opts.highlights.popup_hl)
 		local menus = {}
 		for _, action in pairs(M.actions) do
 			if action.show_hint and action.can_perform(thread, comment) then
@@ -311,9 +306,9 @@ function M.make_comment_popup(thread, comment, enter)
 
 	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, body)
 
-	vim.api.nvim_buf_set_extmark(popup.bufnr, config.opts.comments_ns_id, #body - 1, -1, {
+	vim.api.nvim_buf_set_extmark(popup.bufnr, config.opts.highlights.comments_ns_id, #body - 1, -1, {
 		virt_lines = {
-			{ { (" "):rep(body_width), comment_sep } },
+			{ { (" "):rep(body_width), config.opts.highlights.highlights.comment_sep } },
 			{ { emojis .. (" "):rep(body_width - emojis_width), "StatusLine" } },
 		},
 	})
@@ -366,7 +361,7 @@ function M.make_new_reply_popup(enter)
 			},
 			style = "rounded",
 			text = {
-				top = "Reply as " .. gh.git_user,
+				top = "Reply as " .. git.git_user,
 				top_align = "left",
 			},
 		},
@@ -387,7 +382,7 @@ function M.make_new_reply_popup(enter)
 	end
 
 	reply_popup:on(buf_enter_event, function()
-		reply_popup.border:set_highlight(popup_hl)
+		reply_popup.border:set_highlight(config.opts.highlights.popup_hl)
 		reply_popup.border:set_text("bottom", " [ 󰌑 Submit ] ", "right")
 	end)
 
@@ -433,7 +428,7 @@ function M.make_code_reference_popup(lines, ft)
 	})
 
 	popup:on(event.BufEnter, function()
-		popup.border:set_highlight(popup_hl)
+		popup.border:set_highlight(config.opts.highlights.popup_hl)
 	end)
 
 	popup:on(event.BufLeave, function()
@@ -464,7 +459,7 @@ function M.make_comments_layout(thread)
 
 	comment_boxes = { Layout.Box(comment_boxes, { dir = "col", size = "60%" }) }
 
-	gh.get_git_user()
+	git.get_git_user()
 	if thread.viewer_can_reply then
 		local new_comment_popup = M.make_new_reply_popup()
 
@@ -475,7 +470,7 @@ function M.make_comments_layout(thread)
 				return
 			end
 
-			gh.reply(
+			git.reply(
 				first_comment.database_id,
 				table.concat(body, "\n"),
 				vim.schedule_wrap(function(success)
@@ -576,11 +571,11 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	table.insert(comment_boxes, Layout.Box(comment_reference_popup, { size = #l }))
 	table.insert(popups, comment_reference_popup)
 
-	gh.get_git_user()
+	git.get_git_user()
 	local new_comment_popup = M.make_new_reply_popup(true)
 	new_comment_popup:map("n", "<CR>", function()
 		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
-		gh.comment(
+		git.comment(
 			relative_path,
 			start_line,
 			end_line,
@@ -629,7 +624,7 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 
 	new_comment_popup:map("n", "<CR>", function()
 		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
-		gh.comment(
+		git.comment(
 			relative_path,
 			start_line,
 			end_line,
@@ -666,7 +661,10 @@ function M.make_emoji_menu(comment_id, reaction_groups, winid)
 
 		local text = NuiText(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount)
 		if reaction.viewerHasReacted then
-			text:set(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount, hl_emoji)
+			text:set(
+				reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount,
+				config.opts.highlights.hl_emoji
+			)
 		end
 		table.insert(
 			items,
@@ -716,13 +714,13 @@ function M.make_emoji_menu(comment_id, reaction_groups, winid)
 			if item.viewer_has_reacted then
 				for _, reaction in ipairs(item.reactions) do
 					if reaction.user.login == M.git_user then
-						gh.remove_reaction(item.comment_id, reaction.database_id)
+						git.remove_reaction(item.comment_id, reaction.database_id)
 						return
 					end
 				end
 				vim.notify("You have not reacted to this comment yet.")
 			else
-				gh.add_reaction(item.comment_id, item.id)
+				git.add_reaction(item.comment_id, item.id)
 			end
 
 			-- TODO: get comment and render again
@@ -812,9 +810,9 @@ function M.make_help_menu(thread, comment, popup_winid)
 end
 
 function M.setup()
-	vim.api.nvim_set_hl(0, hl_emoji, { bg = "#4493f8", fg = "white" })
-	vim.api.nvim_set_hl(0, popup_hl, { fg = "Yellow" })
-	vim.api.nvim_set_hl(0, comment_sep, { underline = true, fg = "Grey" })
+	vim.api.nvim_set_hl(0, config.opts.highlights.hl_emoji, { bg = "#4493f8", fg = "white" })
+	vim.api.nvim_set_hl(0, config.opts.highlights.popup_hl, { fg = "Yellow" })
+	vim.api.nvim_set_hl(0, config.opts.highlights.comment_sep, { underline = true, fg = "Grey" })
 end
 
 function M.replace_chars(pos, str, r)

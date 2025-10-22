@@ -1,5 +1,5 @@
 local M = {}
-local gh = require("pr.provider").get_provider()
+local git = require("pr.provider").get_provider()
 
 --- @class pr.pickers.PickCommentsConfig
 --- @field filters function[] (comments: Comments): Comments
@@ -15,7 +15,7 @@ function M.pick_comments(opts)
 
 	local format = opts.format or M.format_comments
 
-	gh.get_comments(vim.schedule_wrap(function(comments)
+	git.get_comments(vim.schedule_wrap(function(comments)
 		for _, filter in ipairs(opts.filters or {}) do
 			comments = filter(comments)
 		end
@@ -172,7 +172,7 @@ function M.pick_hunks(format)
 	format = format or M.format_hunks
 
 	---@param hunks Hunks
-	gh.get_hunks(vim.schedule_wrap(function(hunks)
+	git.get_hunks(vim.schedule_wrap(function(hunks)
 		if next(hunks) == nil then
 			vim.notify("No hunks")
 			return
