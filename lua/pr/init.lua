@@ -1,4 +1,6 @@
-local gh = require("pr.providers.gh")
+local provider = require("pr.provider")
+local config = require("pr.config")
+local gh = provider.get_provider(config.opts)
 local ui = require("pr.ui")
 
 local M = {}
@@ -7,41 +9,9 @@ M.enabled = false
 M.bufs = {}
 M.wins = {}
 
-M.opts = {
-	virtual_text = true,
-	virtual_line = true,
-	sign = "󰅺",
-	multi_line_sign = {
-		start_line = "┌",
-		connector = "│",
-		end_line = "└",
-	},
-	debug = false,
-}
--- Sign definitions
-local sign_group = "PRDiffSigns"
--- local sign_add = "PRAdd"
--- local sign_del = "PRDel"
-local sign_comment = "PRComment"
-local sign_comment_multi_line_start = "PRCommentMultiLineStart"
-local sign_comment_multi_line_connector = "PRCommentMultiLineConnector"
-local sign_comment_multi_line_end = "PRCommentMultiLineEnd"
-local unreolved_text = "PRUnresolved"
-local resolved_text = "PRResolved"
-
-local sign_hl = "DiffComment"
-
--- Highlight definitions
-local hl_group = "PRDiffHighlights"
-local hl_comment = "PRCommentHL"
-
--- State tracking
-local highlights_active = false
-local comments_active = false
-
 -- Namespaces and Groups
-local diff_ns_id = vim.api.nvim_create_namespace("PRDiffHighlights")
-COMMENTS_NS_ID = vim.api.nvim_create_namespace("PRComments")
+local diff_ns_id = config.opts.diff_ns_id
+local COMMENTS_NS_ID = config.opts.comments_ns_id
 
 -- Function to clear all the diff highlights for the current buffer
 local function clear_highlights()
@@ -57,126 +27,27 @@ local function place_highlights()
 		return
 	end
 
-	local git_root = vim.fn.systemlist("git rev-parse --show-toplevel")[1]
-	if git_root == nil or git_root == "" then
-		vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
-		return
-	end
-
-	local relative_path = buffer_path:sub(#git_root + 2)
-	local diff_lines = vim.fn.systemlist("gh pr diff")
-
-	if vim.v.shell_error ~= 0 then
-		vim.api.nvim_echo({ { "Could not get PR diff. Is a PR open for this branch?", "ErrorMsg" } }, true, {})
-		return
-	end
-
-	local current_file_diff = false
-	local line_num_in_buffer = 0
-	local highlights_placed = 0
-
-	---@type Hunk[]
-	---@class Hunk
-	---@field hunk_start integer
-	---@field hunk_end integer
-	---@field type "Add"|"Change"|"Del"
-	local hunks = {}
-
-	local has_add = false
-	local has_del = false
-	local hunk_start = 0
-	local hunk_end = 0
-
-	for _, line in ipairs(diff_lines) do
-		-- Check for the start of a new file's diff
-		local diff_file = line:match("^diff %-%-git a/.+ b/(.+)$")
-		if diff_file then
-			current_file_diff = (diff_file == relative_path)
-			line_num_in_buffer = 0 -- Reset for new file
+	gh.get_git_root(vim.schedule_wrap(function(git_root)
+		if git_root == nil or git_root == "" then
+			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
+			return
 		end
 
-		if current_file_diff then
-			local start_line_str = line:match("^@@ %-.+ %+([0-9]+)")
-			if start_line_str then
-				if hunk_start > 0 then
-					hunk_end = hunk_end or line_num_in_buffer - 1
-					table.insert(hunks, {
-						hunk_start = hunk_start,
-						hunk_end = hunk_end,
-						type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
-					})
-				end
-				-- The line number from the hunk refers to the first line of the new content.
-				-- We adjust it to be the line *before* the first hunk line, so our
-				-- counter is correct after the first increment.
-				line_num_in_buffer = tonumber(start_line_str) - 1
-				has_add = false
-				has_del = false
-				hunk_start = 0
-				hunk_end = 0
+		local relative_path = buffer_path:sub(#git_root + 2)
+		gh.get_hunks(vim.schedule_wrap(function(hunks)
+			hunks = hunks[relative_path] or {}
+			for _, hunk in ipairs(hunks) do
+				vim.notify(vim.inspect(hunk))
+
+				-- 0 indexed
+				vim.api.nvim_buf_set_extmark(0, diff_ns_id, hunk.hunk_start - 1, 0, {
+					line_hl_group = "PRDiff" .. hunk.type,
+					end_row = hunk.hunk_end - 1,
+					end_col = 0,
+				})
 			end
-
-			-- Only process diff lines after a hunk header has been found for this file
-			if line_num_in_buffer >= 0 then
-				if line:sub(1, 1) == "+" then
-					if hunk_start == 0 then
-						hunk_start = line_num_in_buffer
-					end
-					line_num_in_buffer = line_num_in_buffer + 1
-					has_add = true
-					highlights_placed = highlights_placed + 1
-				elseif line:sub(1, 1) == " " then
-					if hunk_start > 0 then
-						hunk_end = line_num_in_buffer - 1
-						table.insert(hunks, {
-							hunk_start = hunk_start,
-							hunk_end = hunk_end,
-							type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
-						})
-
-						has_add = false
-						has_del = false
-						hunk_start = 0
-						hunk_end = 0
-					end
-					line_num_in_buffer = line_num_in_buffer + 1
-				elseif line:sub(1, 1) == "-" then
-					if hunk_start == 0 then
-						hunk_start = line_num_in_buffer
-					end
-					-- A deleted line doesn't exist in the buffer, so we don't increment the line counter.
-					-- We highlight the line before the deletion, if possible.
-					has_del = true
-				end
-			end
-		end
-	end
-
-	if hunk_start > 0 then
-		hunk_end = hunk_end or line_num_in_buffer - 1
-		table.insert(hunks, {
-			hunk_start = hunk_start,
-			hunk_end = hunk_end,
-			type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
-		})
-	end
-
-	for _, hunk in ipairs(hunks) do
-		vim.notify(vim.inspect(hunk))
-		vim.api.nvim_buf_set_extmark(0, diff_ns_id, hunk.hunk_start, 0, {
-			line_hl_group = "PRDiff" .. hunk.type,
-			end_row = hunk.hunk_end,
-			end_col = 0,
-		})
-	end
-
-	if M.opts.debug then
-		if highlights_placed > 0 then
-			vim.api.nvim_echo({ { "PR diff highlights placed for " .. relative_path, "InfoMsg" } }, true, {})
-		else
-			vim.api.nvim_echo({ { "No PR changes found for the current file.", "WarningMsg" } }, true, {})
-		end
-	end
+		end))
+	end))
 end
 
 -- The main toggle function called by the user command
@@ -225,7 +96,7 @@ function M.draw(buf)
 		local relative_path = buffer_path:sub(#git_root + 2)
 		local comments = gh.comments[relative_path] or {}
 		if next(comments) == nil then
-			if M.opts.debug then
+			if config.opts.debug then
 				vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
 			end
 			return
@@ -248,23 +119,41 @@ function M.draw(buf)
 		end
 
 		if start_line == end_line then
-			vim.fn.sign_place(0, sign_group, sign_comment, buf, { lnum = end_line })
+			vim.fn.sign_place(0, config.opts.sign_group, config.opts.sign_comment, buf, { lnum = end_line })
 		else
-			vim.fn.sign_place(0, sign_group, sign_comment_multi_line_start, buf, { lnum = start_line })
+			vim.fn.sign_place(
+				0,
+				config.opts.sign_group,
+				config.opts.sign_comment_multi_line_start,
+				buf,
+				{ lnum = start_line }
+			)
 			for i = start_line + 1, end_line - 1 do
-				vim.fn.sign_place(0, sign_group, sign_comment_multi_line_connector, buf, { lnum = i })
+				vim.fn.sign_place(
+					0,
+					config.opts.sign_group,
+					config.opts.sign_comment_multi_line_connector,
+					buf,
+					{ lnum = i }
+				)
 			end
-			vim.fn.sign_place(0, sign_group, sign_comment_multi_line_end, buf, { lnum = end_line })
+			vim.fn.sign_place(
+				0,
+				config.opts.sign_group,
+				config.opts.sign_comment_multi_line_end,
+				buf,
+				{ lnum = end_line }
+			)
 		end
 
-		if M.opts.virtual_text then
+		if config.opts.virtual_text then
 			vim.api.nvim_buf_set_extmark(buf, COMMENTS_NS_ID, end_line - 1, -1, {
 				virt_text = c,
 				virt_text_pos = "eol",
 			})
 		end
 
-		if M.opts.virtual_line then
+		if config.opts.virtual_line then
 			vim.api.nvim_buf_set_extmark(buf, COMMENTS_NS_ID, end_line - 1, -1, {
 				virt_lines = { c },
 			})
@@ -272,7 +161,7 @@ function M.draw(buf)
 
 		comments_placed = comments_placed + 1
 
-		if M.opts.debug then
+		if config.opts.debug then
 			if comments_placed > 0 then
 				vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
 			else
@@ -484,6 +373,60 @@ function M.cycle_comments_in_buffer(direction, relative_path, line)
 end
 
 ---
+---@param direction "forward"|"backward"
+---@param relative_path string?
+---@param line integer?
+function M.cycle_hunks_in_buffer(direction, relative_path, line)
+	gh.get_git_root(vim.schedule_wrap(function(git_root)
+		if git_root == nil or git_root == "" then
+			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})
+			return
+		end
+
+		local buf = vim.api.nvim_get_current_buf()
+		local buffer_path = vim.api.nvim_buf_get_name(buf)
+		if buffer_path == "" then
+			return
+		end
+		relative_path = relative_path or buffer_path:sub(#git_root + 2)
+		local row, _ = unpack(vim.api.nvim_win_get_cursor(0))
+		line = line or row
+
+		---@param hunks Hunks
+		gh.get_hunks(vim.schedule_wrap(function(hunks)
+			hunks = hunks[relative_path] or {}
+
+			if #hunks == 0 then
+				vim.notify("No hunks found in this file.")
+				return
+			end
+
+			local before_line = nil
+			local after_line = nil
+			local before_index = nil
+			local after_index = nil
+			for i, hunk in ipairs(hunks) do
+				if hunk.hunk_start < line then
+					before_line = hunk.hunk_start
+					before_index = i
+				else
+					after_line = hunk.hunk_start
+					after_index = i
+				end
+			end
+
+			if direction == "forward" then
+				vim.api.nvim_win_set_cursor(0, { after_line or before_line, 0 })
+				vim.notify("PR Hunk " .. (after_index or before_index) .. " of " .. #hunks)
+			elseif direction == "backward" then
+				vim.api.nvim_win_set_cursor(0, { before_line or after_line, 0 })
+				vim.notify("PR Hunk " .. (before_index or after_index) .. " of " .. #hunks)
+			end
+		end))
+	end))
+end
+
+---
 ---@param relative_path? string
 ---@param start_line? integer
 ---@param end_line? integer
@@ -524,7 +467,7 @@ function M.stop()
 	end
 	M.bufs = {}
 	gh.clear()
-	vim.fn.sign_unplace(sign_group)
+	vim.fn.sign_unplace(config.opts.sign_group)
 end
 
 function M.toggle()
@@ -559,26 +502,35 @@ end
 
 -- A single setup function for signs and highlights
 function M.setup(opts)
-	M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
+	config.setup(opts)
 
 	-- vim.fn.sign_define(sign_add, { text = "+", texthl = "DiffAdd" })
 	-- vim.fn.sign_define(sign_del, { text = "-", texthl = "DiffDelete" })
-	vim.fn.sign_define(sign_comment, { text = M.opts.sign, texthl = sign_hl })
-	vim.fn.sign_define(sign_comment_multi_line_start, { text = M.opts.multi_line_sign.start_line, texthl = sign_hl })
-	vim.fn.sign_define(sign_comment_multi_line_connector, { text = M.opts.multi_line_sign.connector, texthl = sign_hl })
-	vim.fn.sign_define(sign_comment_multi_line_end, { text = M.opts.multi_line_sign.end_line, texthl = sign_hl })
+	vim.fn.sign_define(config.opts.sign_comment, { text = config.opts.sign, texthl = config.opts.sign_hl })
+	vim.fn.sign_define(
+		config.opts.sign_comment_multi_line_start,
+		{ text = config.opts.multi_line_sign.start_line, texthl = config.opts.sign_hl }
+	)
+	vim.fn.sign_define(
+		config.opts.sign_comment_multi_line_connector,
+		{ text = config.opts.multi_line_sign.connector, texthl = config.opts.sign_hl }
+	)
+	vim.fn.sign_define(
+		config.opts.sign_comment_multi_line_end,
+		{ text = config.opts.multi_line_sign.end_line, texthl = config.opts.sign_hl }
+	)
 	-- vim.api.nvim_set_hl(0, "DiffAdd", { fg = "Green" })
 	-- vim.api.nvim_set_hl(0, "DiffDelete", { fg = "Red" })
-	vim.api.nvim_set_hl(0, sign_hl, { fg = "LightBlue" })
+	vim.api.nvim_set_hl(0, config.opts.sign_hl, { fg = "LightBlue" })
 	vim.api.nvim_set_hl(0, "PRDiffAdd", { bg = "#40531b" })
 	vim.api.nvim_set_hl(0, "PRDiffChange", { bg = "#2a3a57" })
 	vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
-	vim.api.nvim_set_hl(0, sign_comment, { fg = "Grey", italic = true })
-	vim.api.nvim_set_hl(0, hl_comment, { bg = "LightBlue" })
+	vim.api.nvim_set_hl(0, config.opts.sign_comment, { fg = "Grey", italic = true })
+	vim.api.nvim_set_hl(0, config.opts.hl_comment, { bg = "LightBlue" })
 	-- reddish grey
-	vim.api.nvim_set_hl(0, unreolved_text, { bg = "#997570", italic = true })
+	vim.api.nvim_set_hl(0, config.opts.unresolved_text, { bg = "#997570", italic = true })
 	-- greenish grey
-	vim.api.nvim_set_hl(0, resolved_text, { bg = "#82A67D", italic = true })
+	vim.api.nvim_set_hl(0, config.opts.resolved_text, { bg = "#82A67D", italic = true })
 
 	M.start()
 	ui.setup()

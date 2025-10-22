@@ -6,7 +6,7 @@ local Text = require("nui.text")
 local NuiText = require("nui.text")
 local event = require("nui.utils.autocmd").event
 
-local gh = require("pr.providers.gh")
+local gh = require("pr.provider").get_provider()
 
 local M = {}
 
@@ -17,9 +17,11 @@ local M = {}
 -- TODO: validate with version number
 M.drafts = {}
 
-local popup_hl = "PRCommentPopup"
-local hl_emoji = "PREmojiLine"
-local comment_sep = "PRCommentSeparator"
+local config = require("pr.config")
+
+local popup_hl = config.opts.popup_hl
+local hl_emoji = config.opts.hl_emoji
+local comment_sep = config.opts.comment_sep
 
 local reaction_contents = {
 	CONFUSED = "😕",
@@ -400,6 +402,7 @@ function M.make_new_reply_popup(enter)
 	return reply_popup
 end
 
+---
 ---@param lines string[]
 ---@param ft string
 ---@return NuiPopup

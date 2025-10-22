@@ -52,7 +52,14 @@ M.pr_number = 0
 ---@type Comments
 M.comments = {}
 
--- Helper to get owner/repo from git remote
+---@alias Hunks table<string, Hunk[]>
+---@class Hunk
+---@field hunk_start integer
+---@field hunk_end integer
+---@field type string
+---@type Hunks
+M.hunks = {}
+
 ---
 ---@param callback function?(owner: string, repo: string)
 ---@return nil
@@ -473,6 +480,147 @@ function M.get_git_user(callback)
 	}):start()
 end
 
+--- Parses diff lines into a table of change blocks, keyed by filename.
+--- This function is a modified version of the provided reference script to support multiple files.
+---@param diff_lines table A table of strings, where each string is a line from the diff output.
+---@return Hunks A table where keys are filenames and values are lists of Hunk objects.
+local function parse_diff_hunks(diff_lines)
+	---@type Hunks
+	local hunks_by_file = {}
+
+	-- State for the current file being processed
+	local current_file = nil
+	local line_num_in_buffer = -1 -- -1 indicates we are outside a valid hunk body
+
+	-- State for the current contiguous block of changes (+/- lines)
+	local block_start_line = 0
+	local block_end_line = 0
+	local has_add = false
+	local has_del = false
+
+	-- Helper function to finalize and save the current change block to the correct file
+	local function save_current_block()
+		if current_file and block_start_line > 0 then
+			-- For pure deletions, the change happens at a single line number
+			-- so the end line is the same as the start line.
+			local final_end_line = block_end_line
+			if has_del and not has_add then
+				final_end_line = block_start_line
+			end
+
+			table.insert(hunks_by_file[current_file], {
+				hunk_start = block_start_line,
+				hunk_end = final_end_line,
+				type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
+			})
+		end
+
+		-- Reset for the next block
+		block_start_line = 0
+		block_end_line = 0
+		has_add = false
+		has_del = false
+	end
+
+	for _, line in ipairs(diff_lines) do
+		-- Check for the start of a new file's diff
+		local diff_file = line:match("^diff %-%-git a/.+ b/(.+)$")
+		if diff_file then
+			-- A new file starts, so save any pending block from the *previous* file
+			save_current_block()
+
+			-- Set up for the new file
+			current_file = diff_file
+			hunks_by_file[current_file] = {} -- Initialize the list of hunks for this file
+			line_num_in_buffer = -1 -- Reset line counter
+			goto continue
+		end
+
+		-- Don't process anything until we've identified the first file
+		if not current_file then
+			goto continue
+		end
+
+		-- Check for a hunk header to update the line number
+		local start_line_str = line:match("^@@ %-.+ %+([0-9]+)")
+		if start_line_str then
+			-- A new hunk starts, so save any pending block from the *previous* hunk
+			save_current_block()
+			-- Adjust the line counter to be the line *before* the first line of the hunk
+			line_num_in_buffer = tonumber(start_line_str) - 1
+			goto continue
+		end
+
+		-- Process lines within a hunk body (+, -, or space)
+		if line_num_in_buffer >= 0 then
+			if line:sub(1, 1) == " " then -- Context line
+				-- A context line ends the current block of changes. Save it.
+				save_current_block()
+				line_num_in_buffer = line_num_in_buffer + 1
+			elseif line:sub(1, 1) == "+" then -- Addition
+				if block_start_line == 0 then
+					block_start_line = line_num_in_buffer + 1
+				end
+				line_num_in_buffer = line_num_in_buffer + 1
+				block_end_line = line_num_in_buffer -- The end of the block is this new line
+				has_add = true
+			elseif line:sub(1, 1) == "-" then -- Deletion
+				if block_start_line == 0 then
+					-- The change block starts at the current line in the new file
+					block_start_line = line_num_in_buffer + 1
+				end
+				-- Deletions do not advance the line number in the new file
+				has_del = true
+			end
+		end
+		::continue::
+	end
+
+	-- After the loop, save any final pending block for the last file
+	save_current_block()
+
+	return hunks_by_file
+end
+
+---
+---@param callback function?(hunks: Hunks)
+function M.get_hunks(callback)
+	callback = callback or function(_) end
+
+	if next(M.hunks) then
+		callback(M.hunks)
+		return
+	end
+
+	local args = {
+		"pr",
+		"diff",
+	}
+
+	Job:new({
+		command = "gh",
+		args = args,
+		on_exit = function(j, return_val)
+			if return_val ~= 0 then
+				vim.notify(vim.inspect(j:result()))
+				vim.notify("Error running gh pr diff command. Is a gh cli installed?")
+				return
+			end
+
+			local diff_lines = j:result()
+			local _, t = next(diff_lines)
+			if not t then
+				vim.notify("No result from gh pr diff command. Is a gh cli installed?")
+				return
+			end
+
+			M.hunks = parse_diff_hunks(diff_lines)
+
+			callback(M.hunks)
+		end,
+	}):start()
+end
+
 ---
 ---@param comment_id integer
 ---@param reaction_key string
@@ -750,6 +898,7 @@ end
 
 function M.clear()
 	M.comments = {}
+	M.hunks = {}
 	M.repo_info = {}
 	M.pr_number = 0
 	M.git_root = ""

@@ -33,11 +33,30 @@ return {
       { desc = "Show comment thread in floating window" },
     },
     {
+      "<leader>fh",
+      function()
+        require("pr.pickers").pick_hunks()
+      end,
+      { desc = "Pick PR hunks" },
+    },
+    {
       "<leader>fg",
       function()
-        require("pr.picker").picker()
+        require("pr.pickers").pick_comments()
       end,
-      { desc = "Check PR" },
+      { desc = "Pick PR comments" },
+    },
+    {
+      "]ph",
+      function()
+        require("pr").cycle_hunks_in_buffer("forward")
+      end,
+    },
+    {
+      "[ph",
+      function()
+        require("pr").cycle_hunks_in_buffer("backward")
+      end,
     },
     {
       "]c",
@@ -62,8 +81,8 @@ return {
 - [ ] Visual mode select comment to quote reply
 - [ ] PR explorer
 - [ ] Switch to a PR branch
-- [ ] Add support for actions such as adding new comments and resolving comments
 - [ ] Auto refresh PR comments when changing branches
+- [ ] Auto refresh PR comments manually by command
 - [ ] Auto refresh PR comments by interval
 - [ ] Auto refresh PR comments by autocmd
 - [ ] Local comment drafts
