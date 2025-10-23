@@ -1,6 +1,6 @@
 local provider = require("pr.provider")
 local config = require("pr.config")
-local git = provider.get_provider(config.opts)
+local git = provider.get_provider()
 local ui = require("pr.ui")
 local comment = require("pr.comment")
 local hunk = require("pr.hunk")

@@ -1,8 +1,8 @@
 local M = {}
 
 M.opts = {
-	provider = "github",
-	picker = "snacks",
+	provider = "github", -- github, gitlab, bitbucket
+	picker = "snacks", -- telescope, fzf, snacks
 	virtual_text = true,
 	virtual_line = true,
 	sign = "󰅺",

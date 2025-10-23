@@ -1,8 +1,12 @@
+local config = require("pr.config")
+
 local M = {}
 
-function M.get_provider(opts)
-	opts = opts or {}
-	local provider = opts.provider or "github"
+---
+---@param provider? string
+---@return table
+function M.get_provider(provider)
+	provider = provider or config.opts.provider
 	return require("pr.providers." .. provider)
 end
 
