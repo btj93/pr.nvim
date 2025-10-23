@@ -29,6 +29,10 @@ M.opts = {
 		hl_emoji = "PREmojiLine",
 		comment_sep = "PRCommentSeparator",
 	},
+	run_on_start = {
+		comments = true,
+		hunks = false,
+	},
 }
 
 function M.setup(opts)

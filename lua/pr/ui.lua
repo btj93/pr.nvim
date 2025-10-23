@@ -36,8 +36,8 @@ local reaction_contents = {
 ---@field menu_desc string
 ---@field popup_hint string
 ---@field show_hint boolean
----@field can_perform function(thread: ReviewThread, comment: CommentInfo): boolean
----@field perform function(thread: ReviewThread, comment: CommentInfo, popup_winid: number)
+---@field can_perform? fun(thread: ReviewThread, comment: CommentInfo): boolean
+---@field perform? fun(thread: ReviewThread, comment: CommentInfo, popup_winid: number)
 ---@type table<string, Action>
 M.actions = {
 	emoji = {
@@ -47,15 +47,9 @@ M.actions = {
 		menu_desc = "Reactions for this comment",
 		popup_hint = "[E]moji",
 		show_hint = true,
-		---
-		---@param comment CommentInfo
-		---@return boolean
 		can_perform = function(_, comment)
 			return comment.viewer_can_react
 		end,
-		---
-		---@param comment CommentInfo
-		---@param popup_winid number
 		perform = function(_, comment, popup_winid)
 			local menu = M.make_emoji_menu(comment.database_id, comment.reaction_groups, popup_winid)
 			menu:mount()
@@ -68,14 +62,18 @@ M.actions = {
 		menu_desc = "Resolve this thread",
 		popup_hint = "[R]esolve",
 		show_hint = true,
-		---
-		---@param thread ReviewThread
-		---@return boolean
 		can_perform = function(thread, _)
 			return (not thread.is_resolved) and thread.viewer_can_resolve
 		end,
-		perform = function(thread, comment, popup_winid)
-			vim.notify("TODO: implement")
+		perform = function(thread, _, _)
+			git.resolve_thread(
+				thread.id,
+				vim.schedule_wrap(function(success)
+					if success then
+						vim.notify("Thread resolved")
+					end
+				end)
+			)
 		end,
 	},
 	unresolve = {
@@ -85,14 +83,18 @@ M.actions = {
 		menu_desc = "Unresolve this thread",
 		popup_hint = "Un[R]esolve",
 		show_hint = true,
-		---
-		---@param thread ReviewThread
-		---@return boolean
 		can_perform = function(thread, _)
 			return thread.is_resolved and thread.viewer_can_unresolve
 		end,
-		perform = function(thread, comment, popup_winid)
-			vim.notify("TODO: implement")
+		perform = function(thread, _, _)
+			git.unresolve_thread(
+				thread.id,
+				vim.schedule_wrap(function(success)
+					if success then
+						vim.notify("Thread unresolved")
+					end
+				end)
+			)
 		end,
 	},
 	reply = {
@@ -102,9 +104,6 @@ M.actions = {
 		menu_desc = "Reply to this thread",
 		popup_hint = "[C]omment",
 		show_hint = true,
-		---
-		---@param thread ReviewThread
-		---@return boolean
 		can_perform = function(thread, _)
 			return thread.viewer_can_reply
 		end,
@@ -119,9 +118,6 @@ M.actions = {
 		menu_desc = "Quote reply this comment",
 		popup_hint = "[C]omment",
 		show_hint = false,
-		---
-		---@param thread ReviewThread
-		---@return boolean
 		can_perform = function(thread, _)
 			return thread.viewer_can_reply
 		end,
@@ -136,9 +132,6 @@ M.actions = {
 		menu_desc = "Enter insert mode to edit this comment",
 		popup_hint = "",
 		show_hint = false,
-		---
-		---@param comment CommentInfo
-		---@return boolean
 		can_perform = function(_, comment)
 			return comment.viewer_can_update
 		end,
@@ -180,9 +173,22 @@ M.actions = {
 		can_perform = function(_, comment)
 			return comment.viewer_can_delete
 		end,
-		perform = function(thread, comment, popup_winid)
-			vim.notify("TODO: implement")
-			--- TODO: add a confirm dialog
+		perform = function(_, comment, _)
+			vim.ui.select({ "Yes", "No" }, {
+				prompt = "Are you sure you want to delete this comment? This action cannot be undone.",
+			}, function(choice)
+				if choice == "Yes" then
+					git.delete_comment(
+						comment.database_id,
+						vim.schedule_wrap(function(success)
+							if success then
+								-- FIXME: fix notify not working
+								vim.notify("Comment deleted")
+							end
+						end)
+					)
+				end
+			end)
 		end,
 	},
 	help = {
@@ -195,10 +201,6 @@ M.actions = {
 		can_perform = function()
 			return true
 		end,
-		---
-		---@param thread ReviewThread
-		---@param comment CommentInfo
-		---@param popup_winid number
 		perform = function(thread, comment, popup_winid)
 			local menu = M.make_help_menu(thread, comment, popup_winid)
 			menu:mount()
@@ -308,7 +310,7 @@ function M.make_comment_popup(thread, comment, enter)
 
 	vim.api.nvim_buf_set_extmark(popup.bufnr, config.opts.highlights.comments_ns_id, #body - 1, -1, {
 		virt_lines = {
-			{ { (" "):rep(body_width), config.opts.highlights.highlights.comment_sep } },
+			{ { (" "):rep(body_width), config.opts.highlights.comment_sep } },
 			{ { emojis .. (" "):rep(body_width - emojis_width), "StatusLine" } },
 		},
 	})
@@ -347,8 +349,11 @@ end
 -- TODO: make templates
 ---
 ---@param enter? boolean
+---@param bottom_text? string
 ---@return NuiPopup
-function M.make_new_reply_popup(enter)
+function M.make_new_reply_popup(enter, bottom_text)
+	bottom_text = bottom_text or "[ 󰌑 Submit ]"
+
 	enter = enter or false
 	-- FIXME: use gh.get_git_user
 	local reply_popup = Popup({
@@ -383,7 +388,7 @@ function M.make_new_reply_popup(enter)
 
 	reply_popup:on(buf_enter_event, function()
 		reply_popup.border:set_highlight(config.opts.highlights.popup_hl)
-		reply_popup.border:set_text("bottom", " [ 󰌑 Submit ] ", "right")
+		reply_popup.border:set_text("bottom", bottom_text, "right")
 	end)
 
 	reply_popup:on(event.BufLeave, function()
@@ -572,21 +577,18 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	table.insert(popups, comment_reference_popup)
 
 	git.get_git_user()
-	local new_comment_popup = M.make_new_reply_popup(true)
-	new_comment_popup:map("n", "<CR>", function()
-		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
-		git.comment(
-			relative_path,
-			start_line,
-			end_line,
-			table.concat(body, "\n"),
-			vim.schedule_wrap(function(success)
-				if success then
-					vim.notify("Comment submitted")
-				end
-			end)
-		)
-	end)
+	local new_comment_popup = M.make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ 󰌑 Submit ]")
+
+	for _, mode in ipairs({ "n", "i" }) do
+		new_comment_popup:map(mode, "<M-s>", function()
+			local suggestion = { "```suggestion", unpack(lines) }
+			table.insert(suggestion, "```")
+			vim.notify(vim.inspect(suggestion))
+			vim.api.nvim_buf_set_lines(new_comment_popup.bufnr, 0, -1, false, suggestion)
+			-- TODO: clear if already exists
+			-- TODO: keep existing comment
+		end)
+	end
 
 	local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
 
@@ -632,6 +634,7 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 			vim.schedule_wrap(function(success)
 				if success then
 					vim.notify("Comment submitted")
+					layout:unmount()
 				end
 			end)
 		)

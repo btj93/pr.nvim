@@ -164,7 +164,7 @@ function M.format_comments(item, _)
 end
 
 ---
----@param format? function(item: snacks.picker.Item, _: snacks.Picker): table
+---@param format?? fun(item: snacks.picker.Item, _: snacks.Picker): table
 ---@return nil
 function M.pick_hunks(format)
 	local Snacks = require("snacks")

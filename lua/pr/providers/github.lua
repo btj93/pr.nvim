@@ -61,7 +61,7 @@ M.comments = {}
 M.hunks = {}
 
 ---
----@param callback function?(owner: string, repo: string)
+---@param callback? fun(owner: string, repo: string)
 ---@return nil
 function M.get_repo_info(callback)
 	callback = callback or function(_, _) end
@@ -116,7 +116,7 @@ end
 
 -- Helper to get the current PR number
 ---
----@param callback function?(pr_number: number)
+---@param callback? fun(pr_number: number)
 function M.get_pr_number(callback)
 	callback = callback or function(_) end
 	if M.pr_number > 0 then
@@ -153,7 +153,7 @@ end
 
 -- Helper to get current commit hash
 ---
----@param callback function?(hash: string)
+---@param callback? fun(hash: string)
 ---@return nil
 function M.get_commit_hash(callback)
 	callback = callback or function(_, _) end
@@ -286,6 +286,7 @@ function M.get_comments(callback)
 				args = args,
 				on_exit = function(j, return_val)
 					if return_val ~= 0 then
+						vim.notify(table.concat(args, " "))
 						vim.notify(vim.inspect(j:result()))
 						vim.notify("Error running gh api graphql command. Is a gh cli installed?")
 						return
@@ -425,12 +426,14 @@ function M.get_git_root(callback)
 		return
 	end
 
+	local args = { "rev-parse", "--show-toplevel" }
 	Job:new({
 		command = "git",
-		args = { "rev-parse", "--show-toplevel" },
+		args = args,
 		on_exit = function(j, return_val)
-			-- vim.notify(vim.inspect(j:result()))
 			if return_val ~= 0 then
+				vim.notify(table.concat(args, " "))
+				vim.notify(vim.inspect(j:result()))
 				vim.notify("Error running git rev-parse command. Is a git cli installed?")
 				return
 			end
@@ -455,13 +458,15 @@ function M.get_git_user(callback)
 		return
 	end
 
+	local args = { "api", "user", "-q", ".login" }
 	Job:new({
 		command = "gh",
-		args = { "api", "user", "-q", ".login" },
+		args = args,
 		cmd = "./",
 		on_exit = vim.schedule_wrap(function(j, return_val)
-			-- vim.notify(vim.inspect(j:result()))
 			if return_val ~= 0 then
+				vim.notify(table.concat(args, " "))
+				vim.notify(vim.inspect(j:result()))
 				vim.notify("Error running git user command. Is a git cli installed?")
 				return
 			end
@@ -735,7 +740,7 @@ end
 ---
 ---@param comment_id integer
 ---@param body string
----@param callback function(success: boolean)
+---@param callback? fun(success: boolean)
 function M.reply(comment_id, body, callback)
 	callback = callback or function(_) end
 
@@ -772,6 +777,7 @@ function M.reply(comment_id, body, callback)
 				args = args,
 				on_exit = function(j, return_val)
 					if return_val ~= 0 then
+						vim.notify(table.concat(args, " "))
 						vim.notify(vim.inspect(j:result()))
 						vim.notify("Error running gh reply command. Is a gh cli installed?")
 					end
@@ -788,7 +794,7 @@ end
 ---@param start_line integer
 ---@param end_line integer
 ---@param body string
----@param callback function(success: boolean)
+---@param callback? fun(success: boolean)
 function M.comment(relative_path, start_line, end_line, body, callback)
 	callback = callback or function(_) end
 
@@ -827,25 +833,26 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 					"'Accept: application/vnd.github+json'",
 					"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments",
 					"-f",
-					"'body=" .. body .. "'",
+					"body=" .. body,
 					"-f",
-					"'commit_id=" .. commit_hash .. "'",
+					"commit_id=" .. commit_hash,
 					"-f",
-					"'path=" .. relative_path .. "'",
+					"path=" .. relative_path,
 					"-F",
 					"start_line=" .. start_line,
 					"-f",
-					"'start_side=RIGHT'",
+					"start_side=RIGHT",
 					"-F",
 					"line=" .. end_line,
 					"-f",
-					"'side=RIGHT'",
+					"side=RIGHT",
 				}
 				Job:new({
 					command = "gh",
 					args = args,
 					on_exit = function(j, return_val)
 						if return_val ~= 0 then
+							vim.notify(table.concat(args, " "))
 							vim.notify(vim.inspect(j:result()))
 							vim.notify("Error running gh reply command. Is a gh cli installed?")
 						end
@@ -861,7 +868,7 @@ end
 ---
 ---@param comment_id integer
 ---@param body string
----@param callback function(success: boolean)
+---@param callback? fun(success: boolean)
 function M.edit_comment(comment_id, body, callback)
 	callback = callback or function(_) end
 
@@ -875,37 +882,185 @@ function M.edit_comment(comment_id, body, callback)
 			return
 		end
 
-		M.get_pr_number(vim.schedule_wrap(function(pr_number)
-			-- gh api \
-			--   --method PATCH \
-			--   -H "Accept: application/vnd.github+json" \
-			--   -H "X-GitHub-Api-Version: 2022-11-28" \
-			--   /repos/OWNER/REPO/pulls/comments/COMMENT_ID \
-			--    -f 'body=I like this too!'
+		-- gh api \
+		--   --method PATCH \
+		--   -H "Accept: application/vnd.github+json" \
+		--   -H "X-GitHub-Api-Version: 2022-11-28" \
+		--   /repos/OWNER/REPO/pulls/comments/COMMENT_ID \
+		--    -f 'body=I like this too!'
 
-			local args = {
-				"api",
-				"--method",
-				"PATCH",
-				"-H",
-				"'Accept: application/vnd.github+json'",
-				"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments/" .. comment_id,
-				"-f",
-				"body=" .. body,
-			}
-			Job:new({
-				command = "gh",
-				args = args,
-				on_exit = function(j, return_val)
-					if return_val ~= 0 then
-						vim.notify(vim.inspect(j:result()))
-						vim.notify("Error running gh edit comment command. Is a gh cli installed?")
-					end
+		local args = {
+			"api",
+			"--method",
+			"PATCH",
+			"-H",
+			"'Accept: application/vnd.github+json'",
+			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id,
+			"-f",
+			"body=" .. body,
+		}
+		Job:new({
+			command = "gh",
+			args = args,
+			on_exit = function(j, return_val)
+				if return_val ~= 0 then
+					vim.notify(table.concat(args, " "))
+					vim.notify(vim.inspect(j:result()))
+					vim.notify("Error running gh edit comment command. Is a gh cli installed?")
+				end
 
-					callback(return_val ~= 0)
-				end,
-			}):start()
-		end))
+				callback(return_val ~= 0)
+			end,
+		}):start()
+	end))
+end
+
+--
+---@param thread_id string
+---@param callback function?(success: boolean)
+function M.resolve_thread(thread_id, callback)
+	callback = callback or function(_) end
+
+	--   gh api graphql -f threadId='<THREAD_ID>' -f query='
+	--   mutation($threadId: ID!) {
+	--     resolveReviewThread(input: {threadId: $threadId}) {
+	--       thread {
+	--         isResolved
+	--       }
+	--     }
+	--   }
+	-- '
+	local query_template = [[
+    mutation($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread {
+          isResolved
+        }
+      }
+    }
+  ]]
+
+	local args = {
+		"api",
+		"graphql",
+		"-f",
+		"threadId=" .. thread_id,
+		"-f",
+		"query=" .. query_template,
+	}
+	Job:new({
+		command = "gh",
+		args = args,
+		on_exit = function(j, return_val)
+			if return_val ~= 0 then
+				vim.notify("Error running gh resolve command. Is a gh cli installed?")
+				return
+			end
+
+			local result_json = j:result()
+			local _, t = next(result_json)
+			if not t then
+				vim.notify("No result from gh resolve command. Is a gh cli installed?")
+			end
+			callback(return_val ~= 0)
+		end,
+	}):start()
+end
+
+--
+---@param thread_id string
+---@param callback function?(success: boolean)
+function M.unresolve_thread(thread_id, callback)
+	callback = callback or function(_) end
+
+	--   gh api graphql -f threadId='<THREAD_ID>' -f query='
+	--   mutation($threadId: ID!) {
+	--     unresolveReviewThread(input: {threadId: $threadId}) {
+	--       thread {
+	--         isResolved
+	--       }
+	--     }
+	--   }
+	-- '
+	local query_template = [[
+    mutation($threadId: ID!) {
+      unresolveReviewThread(input: {threadId: $threadId}) {
+        thread {
+          isResolved
+        }
+      }
+    }
+  ]]
+
+	local args = {
+		"api",
+		"graphql",
+		"-f",
+		"threadId=" .. thread_id,
+		"-f",
+		"query=" .. query_template,
+	}
+	Job:new({
+		command = "gh",
+		args = args,
+		on_exit = function(j, return_val)
+			if return_val ~= 0 then
+				vim.notify("Error running gh unresolve command. Is a gh cli installed?")
+				return
+			end
+
+			local result_json = j:result()
+			local _, t = next(result_json)
+			if not t then
+				vim.notify("No result from gh unresolve command. Is a gh cli installed?")
+			end
+			callback(return_val ~= 0)
+		end,
+	}):start()
+end
+
+---
+---@param comment_id integer
+---@param callback function? (success: boolean)
+function M.delete_comment(comment_id, callback)
+	callback = callback or function(_) end
+
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not repo and not owner then
+			vim.api.nvim_echo(
+				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
+				true,
+				{}
+			)
+			return
+		end
+
+		--   gh api \
+		-- --method DELETE \
+		-- -H "Accept: application/vnd.github+json" \
+		-- -H "X-GitHub-Api-Version: 2022-11-28" \
+		-- /repos/OWNER/REPO/pulls/comments/COMMENT_ID
+		local args = {
+			"api",
+			"--method",
+			"DELETE",
+			"-H",
+			"'Accept: application/vnd.github+json'",
+			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id,
+		}
+		Job:new({
+			command = "gh",
+			args = args,
+			on_exit = function(j, return_val)
+				if return_val ~= 0 then
+					vim.notify(table.concat(args, " "))
+					vim.notify(vim.inspect(j:result()))
+					vim.notify("Error running gh delete comment command. Is a gh cli installed?")
+				end
+
+				callback(return_val ~= 0)
+			end,
+		}):start()
 	end))
 end
 

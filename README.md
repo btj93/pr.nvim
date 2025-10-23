@@ -19,9 +19,16 @@ return {
   event = "VeryLazy",
   keys = {
     {
-      "<leader>gc",
+      "<leader>uh",
       function()
-        require("pr").toggle()
+        require("pr").toggle_hunks()
+      end,
+      { desc = "toggle PR hunks" },
+    },
+    {
+      "<leader>uc",
+      function()
+        require("pr").toggle_comments()
       end,
       { desc = "toggle PR comments" },
     },
