@@ -1,12 +1,241 @@
 local M = {}
 local git = require("pr.provider").get_provider()
 
-function M.pick_hunks(...)
-	vim.notify("Not implemented yet")
+--- @class pr.pickers.PickCommentsConfig
+--- @field filters function[] (comments: Comments): Comments
+--- @field format function (entry: table): table
+
+---
+---@param opts? pr.pickers.PickCommentsConfig
+---@return nil
+function M.pick_comments(opts)
+	local telescope = require("telescope")
+	local pickers = require("telescope.pickers")
+	local finders = require("telescope.finders")
+	local sorters = require("telescope.sorters")
+	local actions = require("telescope.actions")
+	local action_state = require("telescope.actions.state")
+
+	opts = opts or {}
+
+	git.get_comments(vim.schedule_wrap(function(comments)
+		for _, filter in ipairs(opts.filters or {}) do
+			comments = filter(comments)
+		end
+
+		if next(comments) == nil then
+			vim.notify("No comments to pick")
+			return
+		end
+
+		local items = {}
+		for file, threads in pairs(comments) do
+			for _, thread in ipairs(threads) do
+				local _, first = next(thread.comments)
+				if first then
+					table.insert(items, {
+						value = {
+							file = file,
+							author = first.author,
+							body = first.body,
+							start_line = first.start_line,
+							end_line = first.end_line,
+						},
+						path = file,
+						lnum = first.start_line,
+						display = M.format_comments,
+						ordinal = first.author .. first.body .. file,
+					})
+				end
+			end
+		end
+
+		pickers
+			.new({ previewer = true }, {
+				prompt_title = "Comments",
+				finder = finders.new_table({
+					results = items,
+					entry_maker = function(entry)
+						return entry
+					end,
+				}),
+				sorter = sorters.get_generic_fuzzy_sorter(),
+				previewer = require("telescope.config").values.grep_previewer({ preview = true }),
+				attach_mappings = function(prompt_bufnr, map)
+					-- This action runs when you press <CR> on an item
+					actions.select_default:replace(function()
+						local selection = action_state.get_selected_entry()
+						actions.close(prompt_bufnr)
+						if selection then
+							vim.cmd("edit " .. vim.fn.fnameescape(selection.value.file))
+							vim.api.nvim_win_set_cursor(0, { selection.value.start_line, 0 })
+						end
+					end)
+					return true
+				end,
+			})
+			:find()
+	end))
 end
 
-function M.pick_comments(...)
-	vim.notify("Not implemented yet")
+---
+---@param comments Comments
+---@return Comments
+function M.unresolved(comments)
+	local c = {}
+	for file, threads in pairs(comments) do
+		local unresolved = {}
+		for _, thread in ipairs(threads) do
+			if not thread.is_resolved then
+				table.insert(unresolved, thread)
+			end
+		end
+		if #unresolved > 0 then
+			c[file] = unresolved
+		end
+	end
+
+	return c
+end
+
+---
+---@param comments Comments
+---@return Comments
+function M.resolved(comments)
+	local c = {}
+	for file, threads in pairs(comments) do
+		local unresolved = {}
+		for _, thread in ipairs(threads) do
+			if thread.is_resolved then
+				table.insert(unresolved, thread)
+			end
+		end
+		if #unresolved > 0 then
+			c[file] = unresolved
+		end
+	end
+
+	return c
+end
+
+---
+---@param comments Comments
+---@return Comments
+function M.non_outdated(comments)
+	local c = {}
+	for file, threads in pairs(comments) do
+		local outdated = {}
+		for _, thread in ipairs(threads) do
+			if not thread.is_outdated then
+				table.insert(outdated, thread)
+			end
+		end
+		if #outdated > 0 then
+			c[file] = outdated
+		end
+	end
+
+	return c
+end
+
+---
+---@param comments Comments
+---@return Comments
+function M.outdated(comments)
+	local c = {}
+	for file, threads in pairs(comments) do
+		local outdated = {}
+		for _, thread in ipairs(threads) do
+			if thread.is_outdated then
+				table.insert(outdated, thread)
+			end
+		end
+		if #outdated > 0 then
+			c[file] = outdated
+		end
+	end
+
+	return c
+end
+
+function M.format_comments(entry)
+	-- Assumes you have 'nvim-web-devicons' installed
+	local icon, _ = require("nvim-web-devicons").get_icon(entry.value.file)
+	local body_truncated = entry.value.body:gsub("\n", " "):sub(1, 40)
+	return string.format("%s %-15s %-40s %s", icon or " ", entry.value.author, body_truncated, entry.value.file)
+end
+
+---
+---@param format? fun(item: table): string
+---@return nil
+function M.pick_hunks(format)
+	local telescope = require("telescope")
+	local pickers = require("telescope.pickers")
+	local finders = require("telescope.finders")
+	local previewers = require("telescope.previewers")
+	local sorters = require("telescope.sorters")
+	local actions = require("telescope.actions")
+	local action_state = require("telescope.actions.state")
+
+	format = format or M.format_hunks
+
+	---@param hunks Hunks
+	git.get_hunks(vim.schedule_wrap(function(hunks)
+		if next(hunks) == nil then
+			vim.notify("No hunks")
+			return
+		end
+
+		local items = {}
+		for file, hs in pairs(hunks) do
+			for _, h in ipairs(hs) do
+				table.insert(items, {
+					value = {
+						file = file,
+						hunk_start = h.hunk_start,
+						hunk_end = h.hunk_end,
+						type = h.type,
+					},
+					path = file,
+					lnum = h.hunk_start,
+					display = format,
+					ordinal = file .. " " .. h.hunk_start .. ":" .. h.hunk_end,
+				})
+			end
+		end
+
+		pickers
+			.new({ previewer = true }, {
+				prompt_title = "Hunks",
+				finder = finders.new_table({
+					results = items,
+					entry_maker = function(entry)
+						return entry
+					end,
+				}),
+				sorter = sorters.get_generic_fuzzy_sorter(),
+				previewer = require("telescope.config").values.grep_previewer({ preview = true }),
+				attach_mappings = function(prompt_bufnr, map)
+					actions.select_default:replace(function()
+						local selection = action_state.get_selected_entry()
+						actions.close(prompt_bufnr)
+						if selection then
+							vim.cmd("edit " .. vim.fn.fnameescape(selection.value.file))
+							vim.api.nvim_win_set_cursor(0, { selection.value.hunk_start, 0 })
+						end
+					end)
+					return true
+				end,
+			})
+			:find()
+	end))
+end
+
+function M.format_hunks(entry)
+	-- Assumes you have 'nvim-web-devicons' installed
+	-- TODO: format to let user know if it is add / change / del
+	local icon, _ = require("nvim-web-devicons").get_icon(entry.value.file)
+	return string.format("%s %-80s %s:%s", icon or " ", entry.value.file, entry.value.hunk_start, entry.value.hunk_end)
 end
 
 return M
