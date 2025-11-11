@@ -735,20 +735,28 @@ M.actions = {
 			return thread.viewer_can_reply
 		end,
 		perform = function(_, _, new_reply_popup, _)
-			local buf = vim.api.nvim_get_current_buf()
-			vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<esc>", true, false, true), "x", true)
-			local start_line = vim.fn.line("'<")
-			local end_line = vim.fn.line("'>")
+			local mode = vim.api.nvim_get_mode().mode
 
-			local lines = vim.api.nvim_buf_get_text(buf, start_line - 1, 0, end_line + 1, -1, {})
+			-- for menu
+			if mode ~= "v" and mode ~= "V" and mode ~= "\22" then
+				vim.notify("Please select a text to quote")
+				vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("v", true, false, true), "x!", true)
+				return
+			end
+
+			local lines = vim.fn.getregion(vim.fn.getpos("v"), vim.fn.getpos("."), { type = mode })
 			for i, line in ipairs(lines) do
 				lines[i] = "> " .. line
 			end
 
+			table.insert(lines, "")
+
 			vim.api.nvim_buf_set_lines(new_reply_popup.bufnr, 0, -1, false, lines)
 			-- TODO: clear if already exists
 			-- TODO: keep existing comment
-			vim.api.nvim_set_current_buf(new_reply_popup.bufnr)
+			vim.api.nvim_set_current_win(new_reply_popup.winid)
+			vim.api.nvim_win_set_cursor(new_reply_popup.winid, { #lines, 0 })
+			vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<esc>", true, false, true), "x", true)
 		end,
 	},
 	edit = {
