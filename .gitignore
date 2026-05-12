@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# luacheck cache (enabled via .luacheckrc)
+.luacheckcache
+
+# Editor swap / undo files
+*.swp
+*.swo
+*~
+
+# ctags
+tags
+tags.lock
+tags.temp
+
+# Test artifacts
+/tmp/
+
+# IDE / editor metadata
+.idea/
+.vscode/
+.nvim.lua
+.exrc
+
+# Local environment overrides
+.env
+.env.local

@@ -75,21 +75,13 @@ function M.get_repo_info(callback)
 		args = { "remote", "get-url", "origin" },
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
-				vim.api.nvim_echo(
-					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-					true,
-					{}
-				)
+				vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 				return
 			end
 			local result_json = j:result()
 			local _, t = next(result_json)
 			if not t then
-				vim.api.nvim_echo(
-					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-					true,
-					{}
-				)
+				vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 				return
 			end
 
@@ -103,11 +95,7 @@ function M.get_repo_info(callback)
 			if owner and repo then
 				M.repo_info = { owner = owner, repo = repo }
 			else
-				vim.api.nvim_echo(
-					{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-					true,
-					{}
-				)
+				vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			end
 			callback(owner, repo)
 		end),
@@ -195,11 +183,7 @@ function M.get_comments(callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
@@ -300,12 +284,7 @@ function M.get_comments(callback)
 					end
 
 					local data = vim.json.decode(t)
-					if
-						not data
-						or not data.data
-						or not data.data.repository
-						or not data.data.repository.pullRequest
-					then
+					if not data or not data.data or not data.data.repository or not data.data.repository.pullRequest then
 						vim.notify("Unexpected GraphQL response structure.")
 						return
 					end
@@ -598,11 +577,7 @@ function M.get_hunks(callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -659,11 +634,7 @@ function M.add_reaction(comment_id, reaction_key, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -706,11 +677,7 @@ function M.remove_reaction(comment_id, reaction_id, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -746,11 +713,7 @@ function M.reply(comment_id, body, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -800,11 +763,7 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -874,11 +833,7 @@ function M.edit_comment(comment_id, body, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -1027,11 +982,7 @@ function M.delete_comment(comment_id, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo(
-				{ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } },
-				true,
-				{}
-			)
+			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -1063,6 +1014,9 @@ function M.delete_comment(comment_id, callback)
 		}):start()
 	end))
 end
+
+-- Exposed for unit testing only; do not rely on this from plugin consumers.
+M._parse_diff_hunks = parse_diff_hunks
 
 function M.clear()
 	M.comments = {}

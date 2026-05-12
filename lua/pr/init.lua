@@ -4,8 +4,78 @@ local git = provider.get_provider()
 local ui = require("pr.ui")
 local comment = require("pr.comment")
 local hunk = require("pr.hunk")
+local Job = require("plenary.job")
 
 local M = {}
+
+local last_branch = nil
+
+--- Asynchronously read the current branch name. Invokes callback with the branch string,
+--- or nil if not in a git repo or the command fails.
+local function get_current_branch(callback)
+	Job:new({
+		command = "git",
+		args = { "rev-parse", "--abbrev-ref", "HEAD" },
+		on_exit = vim.schedule_wrap(function(j, code)
+			if code ~= 0 then
+				return callback(nil)
+			end
+			local result = j:result()
+			local branch = result and result[1]
+			callback(branch)
+		end),
+	}):start()
+end
+
+local function check_branch_and_refresh()
+	if not (comment.enabled or hunk.enabled) then
+		return
+	end
+	get_current_branch(function(branch)
+		if not branch then
+			return
+		end
+		if last_branch and last_branch ~= branch then
+			vim.notify("Switched to branch '" .. branch .. "', refreshing PR data…")
+			-- Diff against the previous branch's PR is nonsense — suppress it.
+			-- The provider's own "You have N(M) comment threads" notification still fires.
+			M.refresh({ show_diff = false })
+		end
+		last_branch = branch
+	end)
+end
+
+local uv = vim.uv or vim.loop
+local refresh_timer = nil
+
+--- Start (or restart) the periodic-refresh timer.
+--- Pass 0 / nil / negative to stop it.
+---@param interval_seconds number?
+function M.set_refresh_interval(interval_seconds)
+	if refresh_timer then
+		refresh_timer:stop()
+		if not refresh_timer:is_closing() then
+			refresh_timer:close()
+		end
+		refresh_timer = nil
+	end
+
+	if not interval_seconds or interval_seconds <= 0 then
+		return
+	end
+
+	refresh_timer = uv.new_timer()
+	local ms = math.floor(interval_seconds * 1000)
+	refresh_timer:start(
+		ms,
+		ms,
+		vim.schedule_wrap(function()
+			if comment.enabled or hunk.enabled then
+				M.refresh()
+			end
+		end)
+	)
+end
 
 ---
 ---@param relative_path string?
@@ -48,10 +118,7 @@ function M.setup(opts)
 
 	-- vim.fn.sign_define(sign_add, { text = "+", texthl = "DiffAdd" })
 	-- vim.fn.sign_define(sign_del, { text = "-", texthl = "DiffDelete" })
-	vim.fn.sign_define(
-		config.opts.highlights.sign_comment,
-		{ text = config.opts.sign, texthl = config.opts.highlights.sign_hl }
-	)
+	vim.fn.sign_define(config.opts.highlights.sign_comment, { text = config.opts.sign, texthl = config.opts.highlights.sign_hl })
 	vim.fn.sign_define(
 		config.opts.highlights.sign_comment_multi_line_start,
 		{ text = config.opts.multi_line_sign.start_line, texthl = config.opts.highlights.sign_hl }
@@ -84,15 +151,32 @@ function M.setup(opts)
 	vim.api.nvim_create_user_command("PRRefresh", function()
 		M.refresh()
 	end, { desc = "Refresh PR comments and hunks" })
+
+	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
+		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
+		vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {
+			group = group,
+			callback = check_branch_and_refresh,
+		})
+		-- Seed last_branch so the first FocusGained doesn't refresh spuriously.
+		get_current_branch(function(branch)
+			last_branch = branch
+		end)
+	end
+
+	if config.opts.auto_refresh then
+		M.set_refresh_interval(config.opts.auto_refresh.interval)
+	end
 end
 
 --- Invalidate cached comments + hunks (and PR number, in case the branch changed)
 --- and redraw all attached windows for whichever features are currently enabled.
-function M.refresh()
+---@param opts? { show_diff?: boolean }
+function M.refresh(opts)
 	if type(git.clear_pr_number) == "function" then
 		git.clear_pr_number()
 	end
-	comment.refresh()
+	comment.refresh(opts)
 	hunk.refresh()
 end
 

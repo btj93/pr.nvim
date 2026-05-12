@@ -33,6 +33,14 @@ M.opts = {
 		comments = true,
 		hunks = false,
 	},
+	auto_refresh = {
+		on_branch_change = true,
+		--- Seconds between automatic refreshes. 0 or nil disables the periodic timer.
+		--- Refresh only fires when at least one feature (comments or hunks) is enabled.
+		--- Defaults to 5 minutes — a balance between fresh data and not hammering the
+		--- gh API. Set to 0 to disable, or pick something tighter while actively reviewing.
+		interval = 300,
+	},
 }
 
 function M.setup(opts)

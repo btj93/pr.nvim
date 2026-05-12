@@ -498,10 +498,7 @@ local function make_emoji_menu(comment_id, reaction_groups, winid)
 
 		local text = NuiText(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount)
 		if reaction.viewerHasReacted then
-			text:set(
-				reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount,
-				config.opts.highlights.hl_emoji
-			)
+			text:set(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount, config.opts.highlights.hl_emoji)
 		end
 		table.insert(
 			items,
@@ -574,10 +571,7 @@ function M.format_reaction(reaction_group)
 	local reactions = {}
 	for _, reaction in ipairs(reaction_group) do
 		if reaction.reactors.totalCount > 0 then
-			table.insert(
-				reactions,
-				"( " .. reaction_contents[reaction.content] .. " " .. reaction.reactors.totalCount .. " )"
-			)
+			table.insert(reactions, "( " .. reaction_contents[reaction.content] .. " " .. reaction.reactors.totalCount .. " )")
 		end
 	end
 	return "   " .. table.concat(reactions, " | ")
