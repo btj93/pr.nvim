@@ -80,6 +80,20 @@ function M.setup(opts)
 	ui.setup()
 	comment.setup()
 	hunk.setup()
+
+	vim.api.nvim_create_user_command("PRRefresh", function()
+		M.refresh()
+	end, { desc = "Refresh PR comments and hunks" })
+end
+
+--- Invalidate cached comments + hunks (and PR number, in case the branch changed)
+--- and redraw all attached windows for whichever features are currently enabled.
+function M.refresh()
+	if type(git.clear_pr_number) == "function" then
+		git.clear_pr_number()
+	end
+	comment.refresh()
+	hunk.refresh()
 end
 
 -- Run setup when the module is loaded

@@ -32,10 +32,6 @@ function M.draw(buf)
 			return
 		end
 
-		local start_line = 0
-		local end_line = 0
-		local c = {}
-
 		local relative_path = buffer_path:sub(#git_root + 2)
 		local comments = git.comments[relative_path] or {}
 		if next(comments) == nil then
@@ -47,8 +43,8 @@ function M.draw(buf)
 		for _, thread in ipairs(comments) do
 			local _, first_comment = next(thread.comments)
 			if first_comment then
-				start_line = first_comment.start_line
-				end_line = first_comment.end_line
+				local start_line = first_comment.start_line
+				local end_line = first_comment.end_line
 				local text = "      "
 					.. first_comment.author
 					.. ": "
@@ -57,58 +53,58 @@ function M.draw(buf)
 				if thread.is_resolved then
 					hl = "DiagnosticVirtualLinesOk"
 				end
-				table.insert(c, { text, hl })
+				local c = { { text, hl } }
+
+				if start_line == end_line then
+					vim.fn.sign_place(
+						0,
+						config.opts.highlights.sign_group,
+						config.opts.highlights.sign_comment,
+						buf,
+						{ lnum = end_line }
+					)
+				else
+					vim.fn.sign_place(
+						0,
+						config.opts.highlights.sign_group,
+						config.opts.highlights.sign_comment_multi_line_start,
+						buf,
+						{ lnum = start_line }
+					)
+					for i = start_line + 1, end_line - 1 do
+						vim.fn.sign_place(
+							0,
+							config.opts.highlights.sign_group,
+							config.opts.highlights.sign_comment_multi_line_connector,
+							buf,
+							{ lnum = i }
+						)
+					end
+					vim.fn.sign_place(
+						0,
+						config.opts.highlights.sign_group,
+						config.opts.highlights.sign_comment_multi_line_end,
+						buf,
+						{ lnum = end_line }
+					)
+				end
+
+				if config.opts.virtual_text then
+					vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
+						virt_text = c,
+						virt_text_pos = "eol",
+					})
+				end
+
+				if config.opts.virtual_line then
+					vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
+						virt_lines = { c },
+					})
+				end
+
+				comments_placed = comments_placed + 1
 			end
 		end
-
-		if start_line == end_line then
-			vim.fn.sign_place(
-				0,
-				config.opts.highlights.sign_group,
-				config.opts.highlights.sign_comment,
-				buf,
-				{ lnum = end_line }
-			)
-		else
-			vim.fn.sign_place(
-				0,
-				config.opts.highlights.sign_group,
-				config.opts.highlights.sign_comment_multi_line_start,
-				buf,
-				{ lnum = start_line }
-			)
-			for i = start_line + 1, end_line - 1 do
-				vim.fn.sign_place(
-					0,
-					config.opts.highlights.sign_group,
-					config.opts.highlights.sign_comment_multi_line_connector,
-					buf,
-					{ lnum = i }
-				)
-			end
-			vim.fn.sign_place(
-				0,
-				config.opts.highlights.sign_group,
-				config.opts.highlights.sign_comment_multi_line_end,
-				buf,
-				{ lnum = end_line }
-			)
-		end
-
-		if config.opts.virtual_text then
-			vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
-				virt_text = c,
-				virt_text_pos = "eol",
-			})
-		end
-
-		if config.opts.virtual_line then
-			vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
-				virt_lines = { c },
-			})
-		end
-
-		comments_placed = comments_placed + 1
 
 		if config.opts.debug then
 			if comments_placed > 0 then
@@ -208,16 +204,48 @@ function M.comment(relative_path, start_line, end_line)
 	end))
 end
 
+--- Clear all comment decorations from currently-tracked buffers.
+local function clear_decorations()
+	for buf, _ in pairs(M.bufs) do
+		if vim.api.nvim_buf_is_valid(buf) then
+			vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.comments_ns_id, 0, -1)
+		end
+	end
+	vim.fn.sign_unplace(config.opts.highlights.sign_group)
+	M.bufs = {}
+end
+
 function M.stop()
 	M.enabled = false
 	M.wins = {}
-	for buf, _ in pairs(M.bufs) do
-		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.diff_ns_id, 0, -1)
-		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.comments_ns_id, 0, -1)
+	clear_decorations()
+	pcall(vim.api.nvim_del_augroup_by_name, "PRComment")
+	if type(git.clear_comments) == "function" then
+		git.clear_comments()
+	else
+		git.clear()
 	end
-	M.bufs = {}
-	git.clear()
-	vim.fn.sign_unplace(config.opts.highlights.sign_group)
+end
+
+--- Invalidate the comments cache, re-fetch, then redraw all attached windows.
+function M.refresh()
+	if not M.enabled then
+		return
+	end
+	clear_decorations()
+	if type(git.clear_comments) == "function" then
+		git.clear_comments()
+	end
+	git.get_comments(vim.schedule_wrap(function(_)
+		for win, _ in pairs(M.wins) do
+			if vim.api.nvim_win_is_valid(win) then
+				local buf = vim.api.nvim_win_get_buf(win)
+				if vim.api.nvim_buf_is_valid(buf) then
+					M.draw(buf)
+				end
+			end
+		end
+	end))
 end
 
 function M.toggle()

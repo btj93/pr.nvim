@@ -117,8 +117,23 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 		end
 	end)
 
-	local b = comment.body:gsub("\r", "")
-	local body = vim.fn.split(b, "\n")
+	-- If a persisted draft exists and matches this comment's updated_at, restore it.
+	-- Otherwise drop any stale draft (the upstream comment has moved on).
+	local persisted = M.drafts[comment.database_id]
+	if persisted and persisted.updated_at ~= comment.updated_at then
+		M.drafts[comment.database_id] = nil
+		persisted = nil
+		M.save_drafts()
+	end
+
+	local body
+	if persisted and persisted.body then
+		body = type(persisted.body) == "table" and persisted.body or vim.fn.split(persisted.body, "\n")
+	else
+		local b = comment.body:gsub("\r", "")
+		body = vim.fn.split(b, "\n")
+	end
+
 	local emojis = M.format_reaction(comment.reaction_groups)
 	-- FIXME: fix hardcode
 	local body_width = 78
@@ -136,7 +151,7 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 	if comment.viewer_can_update then
 		popup:on({ event.TextChanged, event.TextChangedI }, function()
 			local new_body = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
-			if new_body == body then
+			if vim.deep_equal(new_body, body) then
 				return
 			end
 
@@ -150,11 +165,12 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 				body = new_body,
 				updated_at = comment.updated_at,
 			}
+			M.save_drafts()
 		end)
 	end
 
 	for k, action in pairs(M.actions) do
-		if action.key then
+		if action.key and action.can_perform(thread, comment) then
 			popup:map(action.mode, action.key, function()
 				M.actions[k].perform(thread, comment, new_reply_popup, popup.winid)
 			end)
@@ -631,10 +647,67 @@ function M.make_help_menu(thread, comment, new_reply_popup, popup_winid)
 	return menu
 end
 
+local function drafts_path()
+	return vim.fn.stdpath("data") .. "/pr.nvim/drafts.json"
+end
+
+--- Persist M.drafts to disk so in-progress edits survive a Neovim restart.
+function M.save_drafts()
+	local path = drafts_path()
+	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+
+	local serializable = {}
+	for id, draft in pairs(M.drafts) do
+		-- JSON object keys must be strings; integer ids round-trip via tostring/tonumber.
+		serializable[tostring(id)] = draft
+	end
+
+	local ok, encoded = pcall(vim.json.encode, serializable)
+	if not ok then
+		return
+	end
+
+	local f = io.open(path, "w")
+	if not f then
+		return
+	end
+	f:write(encoded)
+	f:close()
+end
+
+--- Load persisted drafts into M.drafts. Existing in-memory entries take precedence.
+function M.load_drafts()
+	local path = drafts_path()
+	local f = io.open(path, "r")
+	if not f then
+		return
+	end
+	local content = f:read("*a")
+	f:close()
+
+	if not content or content == "" then
+		return
+	end
+
+	local ok, decoded = pcall(vim.json.decode, content)
+	if not ok or type(decoded) ~= "table" then
+		return
+	end
+
+	for k, v in pairs(decoded) do
+		local id = tonumber(k)
+		if id and type(v) == "table" and M.drafts[id] == nil then
+			M.drafts[id] = v
+		end
+	end
+end
+
 function M.setup()
 	vim.api.nvim_set_hl(0, config.opts.highlights.hl_emoji, { bg = "#4493f8", fg = "white" })
 	vim.api.nvim_set_hl(0, config.opts.highlights.popup_hl, { fg = "Yellow" })
 	vim.api.nvim_set_hl(0, config.opts.highlights.comment_sep, { underline = true, fg = "Grey" })
+
+	M.load_drafts()
 end
 
 local function replace_chars(pos, str, r)
@@ -786,12 +859,19 @@ M.actions = {
 			return draft.body and draft.updated_at
 		end,
 		perform = function(_, comment, _, _)
+			local draft = M.drafts[comment.database_id]
+			if not draft or not draft.body then
+				return
+			end
+			local body = type(draft.body) == "table" and table.concat(draft.body, "\n") or draft.body
 			git.edit_comment(
 				comment.database_id,
-				comment.body,
+				body,
 				vim.schedule_wrap(function(success)
 					if success then
 						vim.notify("Comment saved")
+						M.drafts[comment.database_id] = nil
+						M.save_drafts()
 					end
 				end)
 			)

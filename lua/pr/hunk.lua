@@ -95,16 +95,47 @@ function M.cycle_hunks_in_buffer(direction, relative_path, line)
 	end))
 end
 
+--- Clear all hunk decorations from currently-tracked buffers.
+local function clear_decorations()
+	for buf, _ in pairs(M.bufs) do
+		if vim.api.nvim_buf_is_valid(buf) then
+			vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.diff_ns_id, 0, -1)
+		end
+	end
+	M.bufs = {}
+end
+
 function M.stop()
 	M.enabled = false
 	M.wins = {}
-	for buf, _ in pairs(M.bufs) do
-		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.diff_ns_id, 0, -1)
-		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.comments_ns_id, 0, -1)
+	clear_decorations()
+	pcall(vim.api.nvim_del_augroup_by_name, "PRHunk")
+	if type(git.clear_hunks) == "function" then
+		git.clear_hunks()
+	else
+		git.clear()
 	end
-	M.bufs = {}
-	git.clear()
-	vim.fn.sign_unplace(config.opts.highlights.sign_group)
+end
+
+--- Invalidate the hunks cache, re-fetch, then redraw all attached windows.
+function M.refresh()
+	if not M.enabled then
+		return
+	end
+	clear_decorations()
+	if type(git.clear_hunks) == "function" then
+		git.clear_hunks()
+	end
+	git.get_hunks(vim.schedule_wrap(function(_)
+		for win, _ in pairs(M.wins) do
+			if vim.api.nvim_win_is_valid(win) then
+				local buf = vim.api.nvim_win_get_buf(win)
+				if vim.api.nvim_buf_is_valid(buf) then
+					M.draw(buf)
+				end
+			end
+		end
+	end))
 end
 
 function M.toggle()
@@ -156,7 +187,7 @@ function M.start()
 		git.get_hunks(vim.schedule_wrap(function(_)
 			git.get_comments(vim.schedule_wrap(function(_)
 				vim.api.nvim_exec2(
-					[[augroup PRComment
+					[[augroup PRHunk
         autocmd!
         autocmd BufWinEnter,WinNew * lua require("pr").attach_hunk()
       augroup end]],

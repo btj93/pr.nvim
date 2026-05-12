@@ -392,7 +392,7 @@ function M.get_comments(callback)
 						local found = false
 						for i, th in ipairs(c) do
 							if th.id == thread_info.id then
-								table[i] = composed
+								c[i] = composed
 								found = true
 								break
 							end
@@ -1071,6 +1071,18 @@ function M.clear()
 	M.pr_number = 0
 	M.git_root = ""
 	M.git_user = ""
+end
+
+function M.clear_comments()
+	M.comments = {}
+end
+
+function M.clear_hunks()
+	M.hunks = {}
+end
+
+function M.clear_pr_number()
+	M.pr_number = 0
 end
 
 return M
