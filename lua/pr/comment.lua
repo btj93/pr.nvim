@@ -43,6 +43,12 @@ function M.draw(buf)
 		end
 		for _, thread in ipairs(comments) do
 			local _, first_comment = next(thread.comments)
+			-- Skip outdated threads inline: their line numbers refer to a previous
+			-- commit's file state and would decorate the wrong lines in the buffer.
+			-- Opt-in via `config.opts.show_outdated_inline = true`.
+			if thread.is_outdated and not config.opts.show_outdated_inline then
+				first_comment = nil
+			end
 			if first_comment then
 				local start_line = first_comment.start_line
 				local end_line = first_comment.end_line

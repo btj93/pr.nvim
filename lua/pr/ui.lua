@@ -1,10 +1,19 @@
-local Popup = require("nui.popup")
-local Layout = require("nui.layout")
-local Menu = require("nui.menu")
-local Line = require("nui.line")
-local Text = require("nui.text")
-local NuiText = require("nui.text")
-local event = require("nui.utils.autocmd").event
+-- nui.nvim is a hard runtime dependency, but we wrap requires in pcall so that
+-- the pure helpers in this file (e.g. M._render_thread) can be unit-tested in
+-- environments that don't have nui installed.
+local function safe_require(mod)
+	local ok, m = pcall(require, mod)
+	return ok and m or nil
+end
+
+local Popup = safe_require("nui.popup")
+local Layout = safe_require("nui.layout")
+local Menu = safe_require("nui.menu")
+local Line = safe_require("nui.line")
+local Text = safe_require("nui.text")
+local NuiText = safe_require("nui.text")
+local _autocmd = safe_require("nui.utils.autocmd")
+local event = _autocmd and _autocmd.event or nil
 
 local git = require("pr.provider").get_provider()
 local config = require("pr.config")
@@ -58,6 +67,95 @@ local function visual_height(lines, width)
 		end
 	end
 	return h
+end
+
+--- Pure renderer for a comment thread.
+--- Produces the buffer contents for the unified scrollable comments view, plus
+--- a lookup from each buffer line to the comment index it belongs to, and
+--- per-comment line ranges used by edit-in-place and hint placement.
+---@param thread ReviewThread
+---@return { lines: string[], line_to_comment: table<integer, integer>, comment_meta: table<integer, { header_line: integer, body_start: integer, body_end: integer, footer_line: integer }> }
+local function render_thread(thread)
+	local lines = {}
+	local line_to_comment = {}
+	local comment_meta = {}
+
+	local function emit(line, idx)
+		table.insert(lines, line)
+		line_to_comment[#lines] = idx
+	end
+
+	-- Width used for the horizontal rule fill; subtract for the leading "─ author ─ " prefix.
+	local function header_line(author_display)
+		local prefix = "── " .. author_display .. " "
+		local fill = math.max(3, BODY_WIDTH - vim.fn.strdisplaywidth(prefix))
+		return prefix .. string.rep("─", fill)
+	end
+
+	for i, c in ipairs(thread.comments or {}) do
+		local author = (c.author or "unknown") .. (c.viewer_did_author and " (you)" or "")
+		local meta = {}
+
+		emit(header_line(author), i)
+		meta.header_line = #lines
+
+		local body = vim.fn.split((c.body or ""):gsub("\r", ""), "\n")
+		if #body == 0 then
+			body = { "" }
+		end
+		meta.body_start = #lines + 1
+		for _, bl in ipairs(body) do
+			emit(bl, i)
+		end
+		meta.body_end = #lines
+
+		-- Reaction row, only if there's at least one reaction with count > 0.
+		local has_reactions = false
+		for _, rg in ipairs(c.reaction_groups or {}) do
+			if rg.reactors and rg.reactors.totalCount and rg.reactors.totalCount > 0 then
+				has_reactions = true
+				break
+			end
+		end
+		if has_reactions then
+			emit("", i)
+			emit(M.format_reaction(c.reaction_groups), i)
+		end
+
+		-- Footer line acts as the anchor for the hint virt_lines extmark.
+		meta.footer_line = #lines
+
+		comment_meta[i] = meta
+
+		-- Gap between comments, mapped to the preceding comment so cursor-on-gap still resolves.
+		if i < #thread.comments then
+			emit("", i)
+		end
+	end
+
+	return { lines = lines, line_to_comment = line_to_comment, comment_meta = comment_meta }
+end
+
+-- Exposed for unit testing only.
+M._render_thread = render_thread
+
+--- Compute the bottom-border-style hint string for one comment, mirroring
+--- `get_popup_hints` but as a single pre-formatted string suitable for virt_text.
+---@param thread ReviewThread
+---@param comment CommentInfo
+---@param mode string
+---@return string
+local function compute_hint_text(thread, comment, mode)
+	local parts = {}
+	for _, action in pairs(M.actions or {}) do
+		if action.mode == mode and action.show_hint and action.can_perform and action.can_perform(thread, comment) then
+			table.insert(parts, action.popup_hint)
+		end
+	end
+	if #parts == 0 then
+		return ""
+	end
+	return " " .. table.concat(parts, " | ") .. " "
 end
 
 ---
@@ -312,10 +410,16 @@ end
 ---@param thread ReviewThread
 ---@return NuiLayout
 function M.make_comments_layout(thread)
-	local popups = {}
-	local comment_boxes = {}
-
 	git.get_git_user()
+	-- Forward declarations so closures created before these are assigned can still
+	-- capture them. `refresh_thread` is built after the layout exists (since it
+	-- needs to unmount on a deleted thread); `layout` itself is assigned further
+	-- below. Lua resolves these as upvalues by the time the closures actually run.
+	---@type NuiLayout?
+	local layout
+	---@type function?
+	local refresh_thread
+
 	local new_reply_popup = make_new_reply_popup()
 
 	new_reply_popup:map("n", "<CR>", function()
@@ -329,95 +433,340 @@ function M.make_comments_layout(thread)
 			first_comment.database_id,
 			table.concat(body, "\n"),
 			vim.schedule_wrap(function(success)
-				if success then
-					vim.notify("Reply submitted")
+				if not success then
+					vim.notify("Reply failed", vim.log.levels.ERROR)
+					return
+				end
+				vim.notify("Reply submitted")
+				-- Clear the composer buffer and refresh so the new reply appears.
+				if vim.api.nvim_buf_is_valid(new_reply_popup.bufnr) then
+					vim.api.nvim_buf_set_lines(new_reply_popup.bufnr, 0, -1, false, {})
+				end
+				if refresh_thread then
+					refresh_thread()
 				end
 			end)
 		)
-
-		-- TODO: spinner
 	end)
 
-	for i, comment in ipairs(thread.comments) do
-		local popup = M.make_comment_popup(thread, comment, new_reply_popup, i == 1)
-		table.insert(popups, popup)
-
-		local lines = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
-		-- Wrap is enabled in the popup's win_options, so account for visual rows
-		-- when sizing the box; otherwise long single-line comments get clipped.
-		local box = Layout.Box(popup, { size = visual_height(lines, BODY_WIDTH) })
-		table.insert(comment_boxes, box)
-	end
-
-	comment_boxes = { Layout.Box(comment_boxes, { dir = "col", size = "60%" }) }
-
-	local new_comment_box = Layout.Box(new_reply_popup, { size = "40%" })
-
-	if thread.viewer_can_reply then
-		table.insert(popups, new_reply_popup)
-		table.insert(comment_boxes, new_comment_box)
-	end
-
-	local layout = Layout({
-		position = "50%",
-		size = {
-			width = 80,
-			height = "60%",
+	-- Single scrollable popup holding the entire conversation.
+	local count_label = #thread.comments .. " comment" .. (#thread.comments == 1 and "" or "s")
+	local title = thread.is_outdated and (" " .. count_label .. " — outdated ") or (" " .. count_label .. " ")
+	-- When the thread is outdated, link Normal to the dim group so the whole
+	-- conversation reads as faded. cursorline / hint hl still paint on top.
+	local normal_link = thread.is_outdated and "PRCommentOutdated" or "Normal"
+	local comments_popup = Popup({
+		border = {
+			padding = { top = 0, bottom = 0, left = 1, right = 1 },
+			style = "rounded",
+			text = {
+				top = title,
+				top_align = "left",
+			},
 		},
-	}, Layout.Box(comment_boxes, { dir = "col" }))
+		buf_options = {
+			modifiable = false,
+			readonly = true,
+			filetype = "markdown",
+		},
+		win_options = {
+			winhighlight = "Normal:" .. normal_link .. ",FloatBorder:FloatBorder",
+			wrap = true,
+			linebreak = true,
+			breakindent = true,
+			cursorline = true,
+		},
+		enter = true,
+	})
 
-	-- set keymaps for comment popups
-	for i, popup in ipairs(popups) do
-		popup:map("n", "q", function()
-			layout:unmount()
-		end)
+	-- Border focus highlight, mirroring make_comment_popup.
+	comments_popup:on({ event.BufEnter }, function()
+		comments_popup.border:set_highlight(config.opts.highlights.popup_hl)
+	end)
+	comments_popup:on(event.BufLeave, function()
+		comments_popup.border:set_highlight("FloatBorder")
+	end)
 
-		popup:map("n", { "j", "<Down>", "<C-n>" }, function()
-			if i == #popups then
-				return
+	-- Render state (mutable across re-renders triggered by edit-commit).
+	local rendered = render_thread(thread)
+	local hint_ns = vim.api.nvim_create_namespace("PRThreadHints")
+
+	local function write_buf()
+		vim.bo[comments_popup.bufnr].modifiable = true
+		vim.api.nvim_buf_set_lines(comments_popup.bufnr, 0, -1, false, rendered.lines)
+		vim.bo[comments_popup.bufnr].modifiable = false
+	end
+	write_buf()
+
+	---@return CommentInfo?, integer?
+	local function under_cursor()
+		if not comments_popup.winid or not vim.api.nvim_win_is_valid(comments_popup.winid) then
+			return nil, nil
+		end
+		local row = vim.api.nvim_win_get_cursor(comments_popup.winid)[1]
+		local idx = rendered.line_to_comment[row]
+		if not idx then
+			return nil, nil
+		end
+		return thread.comments[idx], idx
+	end
+
+	local function refresh_hints()
+		vim.api.nvim_buf_clear_namespace(comments_popup.bufnr, hint_ns, 0, -1)
+		local comment, idx = under_cursor()
+		if not comment or not idx then
+			return
+		end
+		local mode = vim.api.nvim_get_mode().mode
+		local text = compute_hint_text(thread, comment, mode)
+		if text == "" then
+			return
+		end
+		local footer = rendered.comment_meta[idx].footer_line
+		-- Footer is 1-indexed; extmark row is 0-indexed.
+		vim.api.nvim_buf_set_extmark(comments_popup.bufnr, hint_ns, footer - 1, 0, {
+			virt_lines = { { { text, config.opts.highlights.popup_hl } } },
+			virt_lines_above = false,
+		})
+	end
+
+	comments_popup:on({ event.CursorMoved, event.CursorMovedI, event.ModeChanged, event.BufEnter }, refresh_hints)
+
+	--- Is the given 1-indexed buffer line part of any comment's body region?
+	--- Header rules, blank/emoji rows, and gap lines all return false — j/k
+	--- skip past them so the cursor only lands on actual comment content.
+	local function is_body_line(lnum)
+		for _, meta in pairs(rendered.comment_meta) do
+			if lnum >= meta.body_start and lnum <= meta.body_end then
+				return true
 			end
-			vim.api.nvim_set_current_win(popups[i + 1].winid)
-		end)
+		end
+		return false
+	end
 
-		popup:map("n", { "k", "<Up>", "<C-p>" }, function()
-			if i == 1 then
-				return
+	--- Walk from `from` in `dir` (±1) until we find a body line or fall off the buffer.
+	---@return integer? lnum
+	local function next_body_line(from, dir)
+		local total = vim.api.nvim_buf_line_count(comments_popup.bufnr)
+		local l = from + dir
+		while l >= 1 and l <= total do
+			if is_body_line(l) then
+				return l
 			end
-			vim.api.nvim_set_current_win(popups[i - 1].winid)
-		end)
+			l = l + dir
+		end
+		return nil
+	end
 
-		-- re-render all comments if either one is updated
-		popup:on({ event.TextChanged, event.TextChangedI }, function()
-			for sib, sibling in ipairs(popups) do
-				local new_body = vim.api.nvim_buf_get_lines(sibling.bufnr, 0, -1, true)
-				local content_height = visual_height(new_body, BODY_WIDTH)
-				if sib == 1 then
-					sibling:update_layout({
-						size = {
-							width = BODY_WIDTH,
-							height = content_height + 2,
-						},
-					})
-				else
-					local prev_buf = popups[sib - 1]
-					local prev_buf_lines = vim.api.nvim_buf_get_lines(prev_buf.bufnr, 0, -1, true)
-					sibling:update_layout({
-						relative = {
-							type = "win",
-							winid = prev_buf.winid,
-						},
-						position = {
-							row = visual_height(prev_buf_lines, BODY_WIDTH) + 4,
-							col = 0,
-						},
-						size = {
-							width = BODY_WIDTH,
-							height = (sib == #popups and 5) or content_height + 2,
-						},
-					})
+	local function re_render()
+		rendered = render_thread(thread)
+		write_buf()
+		refresh_hints()
+	end
+
+	-- Position the cursor on the first body line as soon as the popup window
+	-- exists (mount() runs after we return). Without this, the popup opens with
+	-- the cursor on a header rule.
+	vim.schedule(function()
+		if comments_popup.winid and vim.api.nvim_win_is_valid(comments_popup.winid) and rendered.comment_meta[1] then
+			pcall(vim.api.nvim_win_set_cursor, comments_popup.winid, { rendered.comment_meta[1].body_start, 0 })
+		end
+	end)
+
+	-- Layout: comments pane on top, reply composer below (always visible).
+	local boxes = { Layout.Box(comments_popup, { size = thread.viewer_can_reply and "60%" or "100%" }) }
+	if thread.viewer_can_reply then
+		table.insert(boxes, Layout.Box(new_reply_popup, { size = "40%" }))
+	end
+
+	layout = Layout({
+		position = "50%",
+		size = { width = BODY_WIDTH + 2, height = "60%" },
+	}, Layout.Box(boxes, { dir = "col" }))
+
+	--- Re-fetch the thread from the provider and re-render. Used after any
+	--- mutation (reply, react, edit, resolve, delete) so the popup reflects the
+	--- server state without forcing the user to close + reopen.
+	---
+	--- Replaces the captured `thread` upvalue so cursor-dispatched actions and
+	--- the navigation keymaps see the fresh data automatically.
+	refresh_thread = function()
+		if type(git.clear_comments) == "function" then
+			git.clear_comments()
+		end
+		git.get_comments(vim.schedule_wrap(function(new_comments_by_file)
+			for _, file_threads in pairs(new_comments_by_file or {}) do
+				for _, t in ipairs(file_threads) do
+					if t.id == thread.id then
+						thread = t
+						if vim.api.nvim_buf_is_valid(comments_popup.bufnr) then
+							re_render()
+						end
+						return
+					end
 				end
 			end
+			-- Thread is gone (e.g. last comment deleted, which removes the thread).
+			vim.notify("Thread no longer exists; closing.")
+			pcall(function()
+				layout:unmount()
+			end)
+		end))
+	end
+
+	-- Cross-popup focus toggling.
+	local function focus_comments()
+		if comments_popup.winid and vim.api.nvim_win_is_valid(comments_popup.winid) then
+			vim.api.nvim_set_current_win(comments_popup.winid)
+		end
+	end
+	local function focus_reply()
+		if new_reply_popup.winid and vim.api.nvim_win_is_valid(new_reply_popup.winid) then
+			vim.api.nvim_set_current_win(new_reply_popup.winid)
+		end
+	end
+
+	-- `q` on the comments popup is handled by the M.actions.quit entry below
+	-- (via the per-action keymap loop), which calls `ctx.unmount()`.
+	if thread.viewer_can_reply then
+		comments_popup:map("n", "<Tab>", focus_reply)
+		comments_popup:map("n", "<S-Tab>", focus_reply)
+		new_reply_popup:map("n", "<S-Tab>", focus_comments)
+		new_reply_popup:map("n", "<Tab>", focus_comments)
+		new_reply_popup:map("n", "q", function()
+			layout:unmount()
 		end)
+	end
+
+	-- Motion-key handling: after any motion (j/k/gj/gk/<C-d>/<C-u>/<C-f>/<C-b>/etc.)
+	-- runs natively, snap the cursor to the nearest body line in the direction the
+	-- user was moving — so the header rule / emoji row / gap line are never focus
+	-- targets, no matter how the cursor got there.
+	local function snap_to_body(prefer_dir)
+		if not comments_popup.winid or not vim.api.nvim_win_is_valid(comments_popup.winid) then
+			return
+		end
+		local cur = vim.api.nvim_win_get_cursor(comments_popup.winid)[1]
+		if is_body_line(cur) then
+			return
+		end
+		local target = next_body_line(cur - prefer_dir, prefer_dir) or next_body_line(cur - prefer_dir, -prefer_dir)
+		if target then
+			vim.api.nvim_win_set_cursor(comments_popup.winid, { target, 0 })
+		end
+	end
+
+	---@param lhs string Map LHS as a keymap string (e.g. "j", "<C-d>", "<Down>").
+	---@param dir 1|-1 Direction the motion moves (used to bias the snap fallback).
+	local function map_motion(lhs, dir)
+		comments_popup:map("n", lhs, function()
+			local count = vim.v.count1
+			local prefix = count > 1 and tostring(count) or ""
+			local keys = vim.api.nvim_replace_termcodes(prefix .. lhs, true, false, true)
+			vim.cmd("normal! " .. keys)
+			snap_to_body(dir)
+		end)
+	end
+
+	map_motion("j", 1)
+	map_motion("<Down>", 1)
+	map_motion("k", -1)
+	map_motion("<Up>", -1)
+	map_motion("gj", 1)
+	map_motion("gk", -1)
+	map_motion("<C-d>", 1)
+	map_motion("<C-u>", -1)
+	map_motion("<C-f>", 1)
+	map_motion("<C-b>", -1)
+
+	-- Insert-mode entry on a comment body: auto-trigger the edit flow.
+	-- Pressing `i` / `a` / `o` etc. on a body line whose comment is editable
+	-- behaves exactly like selecting Edit from the `?` menu — except the
+	-- original key still does its native action (insert before, append after,
+	-- new line, ...) once edit mode is set up.
+	local function try_start_inline_edit(orig_key)
+		return function()
+			local comment, idx = under_cursor()
+			if not comment or not idx or not comment.viewer_can_update then
+				return
+			end
+			if vim.b[comments_popup.bufnr].pr_edit_comment_id ~= comment.database_id then
+				M._start_inline_edit(thread, comment, {
+					bufnr = comments_popup.bufnr,
+					winid = comments_popup.winid,
+					body_range = rendered.comment_meta[idx],
+					re_render = re_render,
+				})
+			end
+			vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(orig_key, true, false, true), "n", false)
+		end
+	end
+	for _, k in ipairs({ "i", "I", "a", "A", "o", "O" }) do
+		comments_popup:map("n", k, try_start_inline_edit(k))
+	end
+
+	-- gg / G: explicit top / bottom — jump straight to the first / last body line.
+	comments_popup:map("n", "gg", function()
+		if rendered.comment_meta[1] then
+			vim.api.nvim_win_set_cursor(comments_popup.winid, { rendered.comment_meta[1].body_start, 0 })
+		end
+	end)
+	comments_popup:map("n", "G", function()
+		local last = rendered.comment_meta[#thread.comments]
+		if last then
+			vim.api.nvim_win_set_cursor(comments_popup.winid, { last.body_end, 0 })
+		end
+	end)
+
+	-- J / K: jump between comments. J on the last comment crosses into the reply.
+	comments_popup:map("n", "J", function()
+		local _, idx = under_cursor()
+		if not idx then
+			return
+		end
+		if idx >= #thread.comments then
+			if thread.viewer_can_reply then
+				focus_reply()
+			end
+			return
+		end
+		local next_start = rendered.comment_meta[idx + 1].body_start
+		vim.api.nvim_win_set_cursor(comments_popup.winid, { next_start, 0 })
+	end)
+
+	comments_popup:map("n", "K", function()
+		local _, idx = under_cursor()
+		if not idx or idx <= 1 then
+			return
+		end
+		local prev_start = rendered.comment_meta[idx - 1].body_start
+		vim.api.nvim_win_set_cursor(comments_popup.winid, { prev_start, 0 })
+	end)
+
+	-- Per-action keymaps, dispatching to the comment under cursor.
+	for k, action in pairs(M.actions) do
+		if action.key then
+			comments_popup:map(action.mode, action.key, function()
+				local comment, idx = under_cursor()
+				if not comment or not idx then
+					return
+				end
+				if not action.can_perform(thread, comment) then
+					return
+				end
+				local ctx = {
+					bufnr = comments_popup.bufnr,
+					winid = comments_popup.winid,
+					body_range = rendered.comment_meta[idx],
+					re_render = re_render,
+					refresh_thread = refresh_thread,
+					unmount = function()
+						layout:unmount()
+					end,
+				}
+				M.actions[k].perform(thread, comment, new_reply_popup, comments_popup.winid, ctx)
+			end)
+		end
 	end
 
 	return layout
@@ -509,9 +858,11 @@ end
 ---
 ---@param comment_id integer
 ---@param reaction_groups CommentReactionGroup[]
----@param winid number
+---@param winid integer Window the menu is anchored to (its right edge).
+---@param row? integer 0-indexed row within `winid` where the menu's NE corner sits. Defaults to 0 (top of the window). The unified comments view passes the cursor's `winline() - 1` so the menu anchors next to the focused comment instead of the top of the conversation.
+---@param refresh? fun() Called after a successful add/remove reaction so the popup re-fetches the thread and re-renders updated counts.
 ---@return NuiMenu
-local function make_emoji_menu(comment_id, reaction_groups, winid)
+local function make_emoji_menu(comment_id, reaction_groups, winid, row, refresh)
 	local items = {}
 
 	local space_count = 6
@@ -547,7 +898,7 @@ local function make_emoji_menu(comment_id, reaction_groups, winid)
 		anchor = "NE",
 		winid = winid,
 		position = {
-			row = 0,
+			row = row or 0,
 			col = -1,
 		},
 		border = {
@@ -573,20 +924,27 @@ local function make_emoji_menu(comment_id, reaction_groups, winid)
 		},
 		on_close = function() end,
 		on_submit = function(item)
-			print("SUBMITTED", vim.inspect(item.viewer_has_reacted))
+			local function after(success)
+				if not success then
+					vim.notify("Reaction failed", vim.log.levels.ERROR)
+					return
+				end
+				if refresh then
+					refresh()
+				end
+			end
+
 			if item.viewer_has_reacted then
 				for _, reaction in ipairs(item.reactions) do
 					if reaction.user.login == M.git_user then
-						git.remove_reaction(item.comment_id, reaction.database_id)
+						git.remove_reaction(item.comment_id, reaction.database_id, vim.schedule_wrap(after))
 						return
 					end
 				end
 				vim.notify("You have not reacted to this comment yet.")
 			else
-				git.add_reaction(item.comment_id, item.id)
+				git.add_reaction(item.comment_id, item.id, vim.schedule_wrap(after))
 			end
-
-			-- TODO: get comment and render again
 		end,
 	})
 
@@ -612,7 +970,7 @@ end
 ---@param new_reply_popup NuiPopup
 ---@param popup_winid number
 ---@return NuiMenu
-function M.make_help_menu(thread, comment, new_reply_popup, popup_winid)
+function M.make_help_menu(thread, comment, new_reply_popup, popup_winid, ctx)
 	---@type nui_popup_options
 	local popup_options = {
 		position = "50%",
@@ -663,7 +1021,7 @@ function M.make_help_menu(thread, comment, new_reply_popup, popup_winid)
 				return
 			end
 
-			M.actions[item.action].perform(thread, comment, new_reply_popup, popup_winid)
+			M.actions[item.action].perform(thread, comment, new_reply_popup, popup_winid, ctx)
 		end,
 	})
 
@@ -729,6 +1087,13 @@ function M.setup()
 	vim.api.nvim_set_hl(0, config.opts.highlights.hl_emoji, { bg = "#4493f8", fg = "white" })
 	vim.api.nvim_set_hl(0, config.opts.highlights.popup_hl, { fg = "Yellow" })
 	vim.api.nvim_set_hl(0, config.opts.highlights.comment_sep, { underline = true, fg = "Grey" })
+	-- Used by edit-in-place to fade out non-editable lines. `default = true` so
+	-- a user's colorscheme can override it freely.
+	vim.api.nvim_set_hl(0, "PRCommentEditDim", { fg = "#5c6370", default = true })
+	-- Used as the Normal-link for the unified comments popup when the thread
+	-- is outdated. Renders the whole conversation in a faded foreground so the
+	-- staleness is visually obvious.
+	vim.api.nvim_set_hl(0, "PRCommentOutdated", { fg = "#5c6370", default = true })
 
 	M.load_drafts()
 end
@@ -747,6 +1112,139 @@ end
 ---@field show_hint boolean
 ---@field can_perform? fun(thread: ReviewThread, comment: CommentInfo): boolean
 ---@field perform? fun(thread: ReviewThread, comment: CommentInfo, new_reply_popup: NuiPopup, popup_winid: number)
+
+--- Set up inline-edit mode on the comments buffer for the given comment, WITHOUT
+--- moving the cursor or entering insert mode. The caller is responsible for
+--- whatever brings the user into insert mode (`startinsert` from the menu path,
+--- or letting the original `i`/`a`/`o`-style keystroke through via `feedkeys`).
+---
+--- Exit happens automatically on `InsertLeave`:
+---   - if the body changed, the new text is sent to `git.edit_comment` (commit);
+---   - otherwise the edit is just torn down with no API call.
+---
+--- `<C-c>` in insert mode is bound as an explicit cancel — it exits insert mode
+--- with a `skip_commit_on_leave` flag set so the InsertLeave handler tears down
+--- without committing.
+---@param thread ReviewThread
+---@param comment CommentInfo
+---@param ctx { bufnr: integer, winid: integer?, body_range: { body_start: integer, body_end: integer }, re_render: function? }
+function M._start_inline_edit(thread, comment, ctx)
+	local bufnr = ctx.bufnr
+	local body_start = ctx.body_range.body_start
+	local body_end = ctx.body_range.body_end
+
+	local dim_ns = vim.api.nvim_create_namespace("PRCommentEditDim")
+	local function place_dim()
+		vim.api.nvim_buf_clear_namespace(bufnr, dim_ns, 0, -1)
+		local total = vim.api.nvim_buf_line_count(bufnr)
+		for i = 0, body_start - 2 do
+			vim.api.nvim_buf_set_extmark(bufnr, dim_ns, i, 0, { line_hl_group = "PRCommentEditDim" })
+		end
+		for i = body_end, total - 1 do
+			vim.api.nvim_buf_set_extmark(bufnr, dim_ns, i, 0, { line_hl_group = "PRCommentEditDim" })
+		end
+	end
+
+	local current_body_end = body_end
+	local detached = false
+	local skip_commit_on_leave = false
+	local autocmd_id
+
+	-- Snapshot the body to compare against on InsertLeave.
+	local original_body = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, body_end, false)
+
+	local function teardown()
+		detached = true
+		if vim.api.nvim_buf_is_valid(bufnr) then
+			vim.api.nvim_buf_clear_namespace(bufnr, dim_ns, 0, -1)
+			pcall(vim.keymap.del, "i", "<C-c>", { buffer = bufnr })
+			vim.b[bufnr].pr_edit_comment_id = nil
+			vim.bo[bufnr].modifiable = false
+		end
+		if autocmd_id then
+			pcall(vim.api.nvim_del_autocmd, autocmd_id)
+			autocmd_id = nil
+		end
+	end
+
+	local function commit()
+		local body_lines = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, current_body_end, false)
+		local body_text = table.concat(body_lines, "\n")
+		git.edit_comment(
+			comment.database_id,
+			body_text,
+			vim.schedule_wrap(function(success)
+				if success then
+					vim.notify("Comment saved")
+					M.drafts[comment.database_id] = nil
+					M.save_drafts()
+				end
+				teardown()
+				if ctx.re_render then
+					ctx.re_render()
+				end
+			end)
+		)
+	end
+
+	local function exit_no_commit()
+		teardown()
+		if ctx.re_render then
+			ctx.re_render()
+		end
+	end
+
+	vim.bo[bufnr].modifiable = true
+	vim.b[bufnr].pr_edit_comment_id = comment.database_id
+	place_dim()
+
+	vim.api.nvim_buf_attach(bufnr, false, {
+		on_lines = function(_, _, _, firstline, lastline, new_lastline)
+			if detached then
+				return true
+			end
+			if firstline < body_start - 1 or lastline > current_body_end then
+				vim.schedule(function()
+					if detached then
+						return
+					end
+					vim.cmd("silent! undo")
+					vim.notify("Edit reverted: changes must be inside the focused comment.")
+					place_dim()
+				end)
+			else
+				current_body_end = current_body_end + (new_lastline - lastline)
+			end
+		end,
+	})
+
+	-- Cancel: <C-c> in insert mode flags skip-commit, then drops to normal mode.
+	vim.keymap.set("i", "<C-c>", function()
+		skip_commit_on_leave = true
+		vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+	end, { buffer = bufnr, nowait = true, desc = "PR: cancel comment edit" })
+
+	-- Auto-commit when returning to normal mode (or silent exit if nothing changed).
+	autocmd_id = vim.api.nvim_create_autocmd("InsertLeave", {
+		buffer = bufnr,
+		callback = function()
+			if detached then
+				return
+			end
+			if skip_commit_on_leave then
+				exit_no_commit()
+				return
+			end
+			local current_body = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, current_body_end, false)
+			if vim.deep_equal(current_body, original_body) then
+				exit_no_commit()
+			else
+				commit()
+			end
+		end,
+	})
+end
+
 ---@type table<string, Action>
 M.actions = {
 	emoji = {
@@ -759,8 +1257,16 @@ M.actions = {
 		can_perform = function(_, comment)
 			return comment.viewer_can_react
 		end,
-		perform = function(_, comment, _, popup_winid)
-			local menu = make_emoji_menu(comment.database_id, comment.reaction_groups, popup_winid)
+		perform = function(_, comment, _, popup_winid, ctx)
+			-- In the unified comments view, anchor the menu to the row of the
+			-- focused comment (otherwise it would always open at the top of the
+			-- conversation popup, regardless of scroll position).
+			local row = 0
+			if popup_winid and vim.api.nvim_win_is_valid(popup_winid) and vim.api.nvim_get_current_win() == popup_winid then
+				row = vim.fn.winline() - 1
+			end
+			local refresh = ctx and ctx.refresh_thread
+			local menu = make_emoji_menu(comment.database_id, comment.reaction_groups, popup_winid, row, refresh)
 			menu:mount()
 		end,
 	},
@@ -774,12 +1280,17 @@ M.actions = {
 		can_perform = function(thread, _)
 			return (not thread.is_resolved) and thread.viewer_can_resolve
 		end,
-		perform = function(thread, _, _)
+		perform = function(thread, _, _, _, ctx)
 			git.resolve_thread(
 				thread.id,
 				vim.schedule_wrap(function(success)
-					if success then
-						vim.notify("Thread resolved")
+					if not success then
+						vim.notify("Resolve failed", vim.log.levels.ERROR)
+						return
+					end
+					vim.notify("Thread resolved")
+					if ctx and ctx.refresh_thread then
+						ctx.refresh_thread()
 					end
 				end)
 			)
@@ -795,12 +1306,17 @@ M.actions = {
 		can_perform = function(thread, _)
 			return thread.is_resolved and thread.viewer_can_unresolve
 		end,
-		perform = function(thread, _, _, _)
+		perform = function(thread, _, _, _, ctx)
 			git.unresolve_thread(
 				thread.id,
 				vim.schedule_wrap(function(success)
-					if success then
-						vim.notify("Thread unresolved")
+					if not success then
+						vim.notify("Unresolve failed", vim.log.levels.ERROR)
+						return
+					end
+					vim.notify("Thread unresolved")
+					if ctx and ctx.refresh_thread then
+						ctx.refresh_thread()
 					end
 				end)
 			)
@@ -865,8 +1381,32 @@ M.actions = {
 		can_perform = function(_, comment)
 			return comment.viewer_can_update
 		end,
-		perform = function(_, _, _, popup_winid)
-			vim.api.nvim_set_current_win(popup_winid)
+		perform = function(thread, comment, _, popup_winid, ctx)
+			-- Legacy fallback: the caller is the single-comment popup, whose buffer
+			-- is already modifiable. Just enter insert mode like before.
+			if not ctx or not ctx.bufnr or not ctx.body_range then
+				vim.api.nvim_set_current_win(popup_winid)
+				vim.cmd("startinsert")
+				return
+			end
+
+			-- Already in edit mode for the same comment? Just re-enter insert.
+			if vim.b[ctx.bufnr].pr_edit_comment_id == comment.database_id then
+				if ctx.winid and vim.api.nvim_win_is_valid(ctx.winid) then
+					vim.api.nvim_set_current_win(ctx.winid)
+					vim.api.nvim_win_set_cursor(ctx.winid, { ctx.body_range.body_start, 0 })
+				end
+				vim.cmd("startinsert")
+				return
+			end
+
+			M._start_inline_edit(thread, comment, ctx)
+
+			-- Position cursor at the start of the editable body and enter insert mode.
+			if ctx.winid and vim.api.nvim_win_is_valid(ctx.winid) then
+				vim.api.nvim_set_current_win(ctx.winid)
+				vim.api.nvim_win_set_cursor(ctx.winid, { ctx.body_range.body_start, 0 })
+			end
 			vim.cmd("startinsert")
 		end,
 	},
@@ -910,7 +1450,7 @@ M.actions = {
 		can_perform = function(_, comment)
 			return comment.viewer_can_delete
 		end,
-		perform = function(_, comment, _, _)
+		perform = function(_, comment, _, _, ctx)
 			vim.ui.select({ "Yes", "No" }, {
 				prompt = "Are you sure you want to delete this comment? This action cannot be undone.",
 			}, function(choice)
@@ -918,9 +1458,13 @@ M.actions = {
 					git.delete_comment(
 						comment.database_id,
 						vim.schedule_wrap(function(success)
-							if success then
-								-- FIXME: fix notify not working
-								vim.notify("Comment deleted")
+							if not success then
+								vim.notify("Delete failed", vim.log.levels.ERROR)
+								return
+							end
+							vim.notify("Comment deleted")
+							if ctx and ctx.refresh_thread then
+								ctx.refresh_thread()
 							end
 						end)
 					)
@@ -938,8 +1482,8 @@ M.actions = {
 		can_perform = function()
 			return true
 		end,
-		perform = function(thread, comment, new_reply_popup, popup_winid)
-			local menu = M.make_help_menu(thread, comment, new_reply_popup, popup_winid)
+		perform = function(thread, comment, new_reply_popup, popup_winid, ctx)
+			local menu = M.make_help_menu(thread, comment, new_reply_popup, popup_winid, ctx)
 			menu:mount()
 
 			for i, node in ipairs(menu.tree:get_nodes()) do
@@ -961,8 +1505,10 @@ M.actions = {
 		can_perform = function()
 			return true
 		end,
-		perform = function(_, _, _, _)
-			-- implemented in M.make_layout
+		perform = function(_, _, _, _, ctx)
+			if ctx and ctx.unmount then
+				ctx.unmount()
+			end
 		end,
 	},
 }

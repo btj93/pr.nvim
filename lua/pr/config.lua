@@ -33,6 +33,13 @@ M.opts = {
 		comments = true,
 		hunks = false,
 	},
+	--- Show outdated comment threads inline (signs + virtual text/lines).
+	--- `false` (default) skips them entirely because GitHub reports their line
+	--- numbers against the commit when the comment was made, so they'd be
+	--- decorated at locations that may have moved or no longer exist in the
+	--- current buffer. Outdated threads are still surfaced via the popup
+	--- (which marks them) and via picker filters.
+	show_outdated_inline = false,
 	auto_refresh = {
 		on_branch_change = true,
 		--- Seconds between automatic refreshes. 0 or nil disables the periodic timer.

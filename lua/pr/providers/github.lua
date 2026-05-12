@@ -662,7 +662,7 @@ function M.add_reaction(comment_id, reaction_key, callback)
 				if not t then
 					vim.notify("No result from gh add reaction command. Is a gh cli installed?")
 				end
-				callback(return_val ~= 0)
+				callback(return_val == 0)
 			end,
 		}):start()
 	end))
@@ -698,7 +698,7 @@ function M.remove_reaction(comment_id, reaction_id, callback)
 					vim.notify("Error running gh remove reaction command. Is a gh cli installed?")
 				end
 
-				callback(return_val ~= 0)
+				callback(return_val == 0)
 			end,
 		}):start()
 	end))
@@ -745,7 +745,7 @@ function M.reply(comment_id, body, callback)
 						vim.notify("Error running gh reply command. Is a gh cli installed?")
 					end
 
-					callback(return_val ~= 0)
+					callback(return_val == 0)
 				end,
 			}):start()
 		end))
@@ -816,7 +816,7 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 							vim.notify("Error running gh reply command. Is a gh cli installed?")
 						end
 
-						callback(return_val ~= 0)
+						callback(return_val == 0)
 					end,
 				}):start()
 			end))
@@ -864,7 +864,7 @@ function M.edit_comment(comment_id, body, callback)
 					vim.notify("Error running gh edit comment command. Is a gh cli installed?")
 				end
 
-				callback(return_val ~= 0)
+				callback(return_val == 0)
 			end,
 		}):start()
 	end))
@@ -917,7 +917,7 @@ function M.resolve_thread(thread_id, callback)
 			if not t then
 				vim.notify("No result from gh resolve command. Is a gh cli installed?")
 			end
-			callback(return_val ~= 0)
+			callback(return_val == 0)
 		end,
 	}):start()
 end
@@ -969,7 +969,7 @@ function M.unresolve_thread(thread_id, callback)
 			if not t then
 				vim.notify("No result from gh unresolve command. Is a gh cli installed?")
 			end
-			callback(return_val ~= 0)
+			callback(return_val == 0)
 		end,
 	}):start()
 end
@@ -1009,7 +1009,7 @@ function M.delete_comment(comment_id, callback)
 					vim.notify("Error running gh delete comment command. Is a gh cli installed?")
 				end
 
-				callback(return_val ~= 0)
+				callback(return_val == 0)
 			end,
 		}):start()
 	end))
