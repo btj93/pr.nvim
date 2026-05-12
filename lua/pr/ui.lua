@@ -35,6 +35,31 @@ M.reply_actions = {
 	saved_reply = {},
 }
 
+-- FIXME: lift this into config; the outer layout width (80) and the per-popup
+-- content width (78 = 80 - left/right border) must stay in sync.
+local BODY_WIDTH = 78
+
+--- Number of visual rows `lines` will occupy in a window of the given content `width`
+--- when 'wrap' is enabled. Used to size popup boxes that contain wrapped comment text.
+---@param lines string[]
+---@param width integer
+---@return integer
+local function visual_height(lines, width)
+	if not width or width <= 0 then
+		return #lines
+	end
+	local h = 0
+	for _, line in ipairs(lines) do
+		local dw = vim.fn.strdisplaywidth(line)
+		if dw == 0 then
+			h = h + 1
+		else
+			h = h + math.ceil(dw / width)
+		end
+	end
+	return h
+end
+
 ---
 ---@param mode string
 ---@param thread ReviewThread
@@ -84,6 +109,9 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 		},
 		win_options = {
 			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
+			wrap = true,
+			linebreak = true,
+			breakindent = true,
 		},
 		enter = enter or false,
 	})
@@ -135,16 +163,14 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 	end
 
 	local emojis = M.format_reaction(comment.reaction_groups)
-	-- FIXME: fix hardcode
-	local body_width = 78
 	local emojis_width = vim.fn.strdisplaywidth(emojis)
 
 	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, body)
 
 	vim.api.nvim_buf_set_extmark(popup.bufnr, config.opts.highlights.comments_ns_id, #body - 1, -1, {
 		virt_lines = {
-			{ { (" "):rep(body_width), config.opts.highlights.comment_sep } },
-			{ { emojis .. (" "):rep(body_width - emojis_width), "StatusLine" } },
+			{ { (" "):rep(BODY_WIDTH), config.opts.highlights.comment_sep } },
+			{ { emojis .. (" "):rep(BODY_WIDTH - emojis_width), "StatusLine" } },
 		},
 	})
 
@@ -211,6 +237,9 @@ local function make_new_reply_popup(enter, bottom_text)
 		},
 		win_options = {
 			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
+			wrap = true,
+			linebreak = true,
+			breakindent = true,
 		},
 		enter = enter,
 	})
@@ -314,8 +343,9 @@ function M.make_comments_layout(thread)
 		table.insert(popups, popup)
 
 		local lines = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
-		-- padding
-		local box = Layout.Box(popup, { size = #lines })
+		-- Wrap is enabled in the popup's win_options, so account for visual rows
+		-- when sizing the box; otherwise long single-line comments get clipped.
+		local box = Layout.Box(popup, { size = visual_height(lines, BODY_WIDTH) })
 		table.insert(comment_boxes, box)
 	end
 
@@ -360,12 +390,12 @@ function M.make_comments_layout(thread)
 		popup:on({ event.TextChanged, event.TextChangedI }, function()
 			for sib, sibling in ipairs(popups) do
 				local new_body = vim.api.nvim_buf_get_lines(sibling.bufnr, 0, -1, true)
+				local content_height = visual_height(new_body, BODY_WIDTH)
 				if sib == 1 then
 					sibling:update_layout({
 						size = {
-							-- FIXME: fix hardcode
-							width = 78,
-							height = #new_body + 2,
+							width = BODY_WIDTH,
+							height = content_height + 2,
 						},
 					})
 				else
@@ -377,13 +407,12 @@ function M.make_comments_layout(thread)
 							winid = prev_buf.winid,
 						},
 						position = {
-							row = #prev_buf_lines + 4,
+							row = visual_height(prev_buf_lines, BODY_WIDTH) + 4,
 							col = 0,
 						},
 						size = {
-							-- FIXME: fix hardcode
-							width = 78,
-							height = (sib == #popups and 5) or #new_body + 2,
+							width = BODY_WIDTH,
+							height = (sib == #popups and 5) or content_height + 2,
 						},
 					})
 				end
