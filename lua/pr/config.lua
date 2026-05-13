@@ -42,6 +42,7 @@ M.opts = {
 	show_outdated_inline = false,
 	auto_refresh = {
 		on_branch_change = true,
+		on_head_change = true,
 		--- Seconds between automatic refreshes. 0 or nil disables the periodic timer.
 		--- Refresh only fires when at least one feature (comments or hunks) is enabled.
 		--- Defaults to 5 minutes — a balance between fresh data and not hammering the

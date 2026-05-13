@@ -3,12 +3,48 @@ local M = {}
 local git = require("pr.provider").get_provider()
 local config = require("pr.config")
 local util = require("pr.util")
+local drift = require("pr.drift")
 -- `pr.ui` is required lazily inside M.comment so that importing this module
 -- in unit tests doesn't drag in nui.nvim (which isn't available in the test env).
 
 M.bufs = {}
 M.wins = {}
+M.generations = {}
 M.enabled = false
+
+-- File-local helper. Encapsulates the sign + extmark placement so M.draw and
+-- the drift-rebased variant share the same body.
+local function place_decorations(buf, thread, first_comment, start_line, end_line)
+	local text = "      " .. first_comment.author .. ": " .. first_comment.body:gsub("\r\n", " "):gsub("\n", " ")
+	local hl = "DiagnosticVirtualLinesWarn"
+	if thread.is_resolved then
+		hl = "DiagnosticVirtualLinesOk"
+	end
+	local c = { { text, hl } }
+
+	if start_line == end_line then
+		vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment, buf, { lnum = end_line })
+	else
+		vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_start, buf, { lnum = start_line })
+		for i = start_line + 1, end_line - 1 do
+			vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_connector, buf, { lnum = i })
+		end
+		vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_end, buf, { lnum = end_line })
+	end
+
+	if config.opts.virtual_text then
+		vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
+			virt_text = c,
+			virt_text_pos = "eol",
+		})
+	end
+
+	if config.opts.virtual_line then
+		vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
+			virt_lines = { c },
+		})
+	end
+end
 
 ---
 ---@param buf integer?
@@ -20,6 +56,7 @@ function M.draw(buf)
 	end
 
 	M.bufs[buf] = true
+	local my_gen = M.generations[buf] or 0
 
 	local buffer_path = vim.api.nvim_buf_get_name(buf)
 	if buffer_path == "" then
@@ -41,58 +78,44 @@ function M.draw(buf)
 			end
 			return
 		end
-		for _, thread in ipairs(comments) do
-			local _, first_comment = next(thread.comments)
-			-- Skip outdated threads inline: their line numbers refer to a previous
-			-- commit's file state and would decorate the wrong lines in the buffer.
-			-- Opt-in via `config.opts.show_outdated_inline = true`.
-			if thread.is_outdated and not config.opts.show_outdated_inline then
-				first_comment = nil
+		drift.get_for_buffer(buf, git_root, relative_path, function(drift_map)
+			if not vim.api.nvim_buf_is_valid(buf) then
+				return
 			end
-			if first_comment then
-				local start_line = first_comment.start_line
-				local end_line = first_comment.end_line
-				local text = "      " .. first_comment.author .. ": " .. first_comment.body:gsub("\r\n", " "):gsub("\n", " ")
-				local hl = "DiagnosticVirtualLinesWarn"
-				if thread.is_resolved then
-					hl = "DiagnosticVirtualLinesOk"
+			if (M.generations[buf] or 0) ~= my_gen then
+				return
+			end
+			for _, thread in ipairs(comments) do
+				local _, first_comment = next(thread.comments)
+				-- Skip outdated threads inline: their line numbers refer to a previous
+				-- commit's file state and would decorate the wrong lines in the buffer.
+				-- Opt-in via `config.opts.show_outdated_inline = true`.
+				if thread.is_outdated and not config.opts.show_outdated_inline then
+					first_comment = nil
 				end
-				local c = { { text, hl } }
-
-				if start_line == end_line then
-					vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment, buf, { lnum = end_line })
-				else
-					vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_start, buf, { lnum = start_line })
-					for i = start_line + 1, end_line - 1 do
-						vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_connector, buf, { lnum = i })
+				if first_comment then
+					local start_line = first_comment.start_line
+					local end_line = first_comment.end_line
+					if drift_map then
+						start_line = drift.commit_to_buffer(drift_map, first_comment.start_line)
+						end_line = drift.commit_to_buffer(drift_map, first_comment.end_line)
 					end
-					vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_end, buf, { lnum = end_line })
-				end
+					if start_line and end_line then
+						place_decorations(buf, thread, first_comment, start_line, end_line)
 
-				if config.opts.virtual_text then
-					vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
-						virt_text = c,
-						virt_text_pos = "eol",
-					})
+						comments_placed = comments_placed + 1
+					end
 				end
-
-				if config.opts.virtual_line then
-					vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
-						virt_lines = { c },
-					})
-				end
-
-				comments_placed = comments_placed + 1
 			end
-		end
 
-		if config.opts.debug then
-			if comments_placed > 0 then
-				vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
-			else
-				vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+			if config.opts.debug then
+				if comments_placed > 0 then
+					vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
+				else
+					vim.api.nvim_echo({ { "No inline PR comments found for this file.", "WarningMsg" } }, true, {})
+				end
 			end
-		end
+		end)
 	end))
 end
 
@@ -185,6 +208,18 @@ function M.comment(relative_path, start_line, end_line)
 	end))
 end
 
+--- Clear comment decorations for a single buffer, including the "already drawn"
+--- flag in M.bufs so the next M.draw call actually re-runs (rather than
+--- short-circuiting on the flag).
+local function clear_buf_decorations(buf)
+	M.generations[buf] = (M.generations[buf] or 0) + 1
+	if vim.api.nvim_buf_is_valid(buf) then
+		vim.api.nvim_buf_clear_namespace(buf, config.opts.highlights.comments_ns_id, 0, -1)
+		vim.fn.sign_unplace(config.opts.highlights.sign_group, { buffer = buf })
+	end
+	M.bufs[buf] = nil
+end
+
 --- Clear all comment decorations from currently-tracked buffers.
 local function clear_decorations()
 	for buf, _ in pairs(M.bufs) do
@@ -200,7 +235,9 @@ function M.stop()
 	M.enabled = false
 	M.wins = {}
 	clear_decorations()
+	drift.invalidate_all()
 	pcall(vim.api.nvim_del_augroup_by_name, "PRComment")
+	pcall(vim.api.nvim_del_augroup_by_name, "PRCommentBufWrite")
 	if type(git.clear_comments) == "function" then
 		git.clear_comments()
 	else
@@ -321,6 +358,7 @@ function M.refresh(opts)
 	local old_snapshot = show_diff and vim.deepcopy(git.comments or {}) or nil
 
 	clear_decorations()
+	drift.invalidate_all()
 	if type(git.clear_comments) == "function" then
 		git.clear_comments()
 	end
@@ -380,6 +418,20 @@ function M.attach(win)
 			end,
 			on_detach = function()
 				M.bufs[buf] = nil
+				M.generations[buf] = nil
+				drift.invalidate(buf)
+			end,
+		})
+
+		vim.api.nvim_create_autocmd("BufWritePost", {
+			group = vim.api.nvim_create_augroup("PRCommentBufWrite", { clear = false }),
+			buffer = buf,
+			callback = function()
+				drift.invalidate(buf)
+				if M.enabled then
+					clear_buf_decorations(buf)
+					M.draw(buf)
+				end
 			end,
 		})
 

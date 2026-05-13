@@ -27,7 +27,7 @@ local M = {}
 -- TODO: validate with version number
 M.drafts = {}
 
-local function glyph_for(content)
+function M._glyph_for(content)
 	if git and git.reaction_palette then
 		for _, entry in ipairs(git.reaction_palette) do
 			if entry.content == content then
@@ -453,7 +453,16 @@ function M.make_comments_layout(thread)
 
 	-- Single scrollable popup holding the entire conversation.
 	local count_label = #thread.comments .. " comment" .. (#thread.comments == 1 and "" or "s")
-	local title = thread.is_outdated and (" " .. count_label .. " — outdated ") or (" " .. count_label .. " ")
+	local title_suffix = ""
+	if thread.is_outdated then
+		title_suffix = " — outdated"
+	end
+	if thread.is_resolved and thread.resolved_by and thread.resolved_by ~= "" then
+		title_suffix = title_suffix .. " — resolved by " .. thread.resolved_by
+	elseif thread.is_resolved then
+		title_suffix = title_suffix .. " — resolved"
+	end
+	local title = " " .. count_label .. title_suffix .. " "
 	-- When the thread is outdated, link Normal to the dim group so the whole
 	-- conversation reads as faded. cursorline / hint hl still paint on top.
 	local normal_link = thread.is_outdated and "PRCommentOutdated" or "Normal"
@@ -782,6 +791,10 @@ end
 ---@param end_line integer
 ---@return NuiLayout
 function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_line)
+	-- Capture the source buffer BEFORE any popup mounts steal focus. The drift
+	-- preflight (see the <CR> handler below) needs the buffer the user actually
+	-- selected lines in, not the popup that's about to take focus.
+	local source_bufnr = vim.api.nvim_get_current_buf()
 	local comment_reference_popup = make_code_reference_popup(lines, ft)
 	local comment_boxes = {}
 
@@ -840,46 +853,56 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 
 	new_comment_popup:map("n", "<CR>", function()
 		local body = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, true)
-		git.comment(
-			relative_path,
-			start_line,
-			end_line,
-			table.concat(body, "\n"),
-			vim.schedule_wrap(function(success)
-				if success then
-					vim.notify("Comment submitted")
-					layout:unmount()
-				end
-			end)
-		)
+		local drift = require("pr.drift")
+		local git_root = git.git_root
+
+		drift.get_for_buffer(source_bufnr, git_root, relative_path, function(drift_map)
+			local commit_start = start_line
+			local commit_end = end_line
+			if drift_map then
+				commit_start = drift.buffer_to_commit(drift_map, start_line)
+				commit_end = drift.buffer_to_commit(drift_map, end_line)
+			end
+			if commit_start == nil or commit_end == nil then
+				vim.notify(
+					"Cannot post: selected lines are not in the PR's committed diff (uncommitted local changes). Commit your changes or select a line that exists in the PR.",
+					vim.log.levels.WARN
+				)
+				return
+			end
+			git.comment(
+				relative_path,
+				commit_start,
+				commit_end,
+				table.concat(body, "\n"),
+				vim.schedule_wrap(function(success)
+					if success then
+						vim.notify("Comment submitted")
+						layout:unmount()
+					end
+				end)
+			)
+		end)
 	end)
 
 	return layout
 end
 
----
----@param comment_id integer
----@param reaction_groups CommentReactionGroup[]
----@param winid integer Window the menu is anchored to (its right edge).
----@param row? integer 0-indexed row within `winid` where the menu's NE corner sits. Defaults to 0 (top of the window). The unified comments view passes the cursor's `winline() - 1` so the menu anchors next to the focused comment instead of the top of the conversation.
----@param refresh? fun() Called after a successful add/remove reaction so the popup re-fetches the thread and re-renders updated counts.
----@return NuiMenu
-local function make_emoji_menu(comment_id, reaction_groups, winid, row, refresh)
-	local items = {}
-
-	-- Index existing reaction groups by content for O(1) palette lookup.
+--- Build the ordered list of emoji-menu entries for a comment. Pure function
+--- exposed for unit testing — does not construct nui Menu objects.
+---@param reaction_groups CommentReactionGroup[] reactions already on the comment
+---@param palette ReactionPaletteEntry[]|nil active provider's palette (nil/empty palette returns empty list)
+---@return table[] items List of `{ content, glyph, count, viewer_has_reacted, reactors }` entries in display order.
+function M._build_menu_items(reaction_groups, palette)
 	local existing = {}
 	for _, rg in pairs(reaction_groups or {}) do
 		existing[rg.content] = rg
 	end
 
-	-- Show palette entries first (in palette order, including addable-but-unused
-	-- ones with count 0). Then append any non-palette reactions that already
-	-- exist on this comment, so the user can still remove them.
 	local ordered = {}
 	local seen = {}
-	if git.reaction_palette then
-		for _, entry in ipairs(git.reaction_palette) do
+	if palette then
+		for _, entry in ipairs(palette) do
 			table.insert(ordered, entry.content)
 			seen[entry.content] = true
 		end
@@ -891,37 +914,55 @@ local function make_emoji_menu(comment_id, reaction_groups, winid, row, refresh)
 		end
 	end
 
-	local space_count = 6
+	local items = {}
 	for _, content in ipairs(ordered) do
 		local rg = existing[content]
 		local count = (rg and rg.reactors and rg.reactors.totalCount) or 0
-		local count_digits = #tostring(count)
-		if count_digits > space_count then
-			space_count = count_digits + 2
+		local viewer_has_reacted = (rg and rg.viewerHasReacted) or false
+		local reactors = (rg and rg.reactors and rg.reactors.nodes) or {}
+		table.insert(items, {
+			content = content,
+			glyph = M._glyph_for(content),
+			count = count,
+			viewer_has_reacted = viewer_has_reacted,
+			reactors = reactors,
+		})
+	end
+	return items
+end
+
+---
+---@param comment_id integer
+---@param reaction_groups CommentReactionGroup[]
+---@param winid integer Window the menu is anchored to (its right edge).
+---@param row? integer 0-indexed row within `winid` where the menu's NE corner sits. Defaults to 0 (top of the window). The unified comments view passes the cursor's `winline() - 1` so the menu anchors next to the focused comment instead of the top of the conversation.
+---@param refresh? fun() Called after a successful add/remove reaction so the popup re-fetches the thread and re-renders updated counts.
+---@return NuiMenu
+local function make_emoji_menu(comment_id, reaction_groups, winid, row, refresh)
+	local entries = M._build_menu_items(reaction_groups, git.reaction_palette)
+
+	local space_count = 6
+	for _, e in ipairs(entries) do
+		local d = #tostring(e.count)
+		if d > space_count then
+			space_count = d + 2
 		end
 	end
 
-	for _, content in ipairs(ordered) do
-		local reaction = existing[content] or {
-			content = content,
-			viewerHasReacted = false,
-			reactors = { totalCount = 0, nodes = {} },
-		}
-		local count_digits = #tostring(reaction.reactors.totalCount)
-		local sep = string.rep(" ", space_count - count_digits)
-		local glyph = glyph_for(content)
-
-		local text = NuiText(glyph .. sep .. reaction.reactors.totalCount)
-		if reaction.viewerHasReacted then
-			text:set(glyph .. sep .. reaction.reactors.totalCount, config.opts.highlights.hl_emoji)
+	local items = {}
+	for _, e in ipairs(entries) do
+		local sep = string.rep(" ", space_count - #tostring(e.count))
+		local text = NuiText(e.glyph .. sep .. e.count)
+		if e.viewer_has_reacted then
+			text:set(e.glyph .. sep .. e.count, config.opts.highlights.hl_emoji)
 		end
 		table.insert(
 			items,
 			Menu.item(text, {
-				id = reaction.content,
-				viewer_has_reacted = reaction.viewerHasReacted,
+				id = e.content,
+				viewer_has_reacted = e.viewer_has_reacted,
 				comment_id = comment_id,
-				reactions = reaction.reactors.nodes,
+				reactions = e.reactors,
 			})
 		)
 	end
@@ -993,7 +1034,7 @@ function M.format_reaction(reaction_group)
 	local reactions = {}
 	for _, reaction in ipairs(reaction_group) do
 		if reaction.reactors.totalCount > 0 then
-			table.insert(reactions, "( " .. glyph_for(reaction.content) .. " " .. reaction.reactors.totalCount .. " )")
+			table.insert(reactions, "( " .. M._glyph_for(reaction.content) .. " " .. reaction.reactors.totalCount .. " )")
 		end
 	end
 	return "   " .. table.concat(reactions, " | ")

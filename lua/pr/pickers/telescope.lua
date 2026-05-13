@@ -15,13 +15,15 @@ function M.pick_comments(opts)
 	local sorters = require("telescope.sorters")
 	local actions = require("telescope.actions")
 	local action_state = require("telescope.actions.state")
+	local filter = require("pr.pickers.filter")
 
 	opts = opts or {}
 
 	git.get_comments(vim.schedule_wrap(function(comments)
-		for _, filter in ipairs(opts.filters or {}) do
-			comments = filter(comments)
+		for _, f in ipairs(opts.filters or {}) do
+			comments = f(comments)
 		end
+		comments = filter.apply(comments)
 
 		if next(comments) == nil then
 			vim.notify("No comments to pick")
@@ -52,7 +54,7 @@ function M.pick_comments(opts)
 
 		pickers
 			.new({ previewer = true }, {
-				prompt_title = "Comments",
+				prompt_title = filter.label() .. "PR Comments",
 				finder = finders.new_table({
 					results = items,
 					entry_maker = function(entry)
@@ -67,10 +69,27 @@ function M.pick_comments(opts)
 						local selection = action_state.get_selected_entry()
 						actions.close(prompt_bufnr)
 						if selection then
-							vim.cmd("edit " .. vim.fn.fnameescape(selection.value.file))
-							vim.api.nvim_win_set_cursor(0, { selection.value.start_line, 0 })
+							local rel = selection.value.file
+							local abs = require("pr.provider").get_provider().git_root .. "/" .. rel
+							require("pr.util").open_pr_file(abs, rel, { line = selection.value.start_line })
 						end
 					end)
+					local toggle_resolved = function()
+						filter.toggle("resolved")
+						actions.close(prompt_bufnr)
+						require("pr.picker").pick_comments()
+					end
+					local toggle_outdated = function()
+						filter.toggle("outdated")
+						actions.close(prompt_bufnr)
+						require("pr.picker").pick_comments()
+					end
+					-- Bind in both normal and insert mode so users typing in the filter prompt
+					-- can also toggle without hitting <Esc> first.
+					map("n", "R", toggle_resolved)
+					map("i", "<C-r>", toggle_resolved)
+					map("n", "O", toggle_outdated)
+					map("i", "<C-o>", toggle_outdated)
 					return true
 				end,
 			})
@@ -220,8 +239,9 @@ function M.pick_hunks(format)
 						local selection = action_state.get_selected_entry()
 						actions.close(prompt_bufnr)
 						if selection then
-							vim.cmd("edit " .. vim.fn.fnameescape(selection.value.file))
-							vim.api.nvim_win_set_cursor(0, { selection.value.hunk_start, 0 })
+							local rel = selection.value.file
+							local abs = require("pr.provider").get_provider().git_root .. "/" .. rel
+							require("pr.util").open_pr_file(abs, rel, { line = selection.value.hunk_start })
 						end
 					end)
 					return true

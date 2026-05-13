@@ -1,6 +1,12 @@
 local M = {}
 local git = require("pr.provider").get_provider()
 
+local function safe_require(mod)
+	local ok, m = pcall(require, mod)
+	return ok and m or nil
+end
+local Snacks = safe_require("snacks")
+
 --- @class pr.pickers.PickCommentsConfig
 --- @field filters function[] (comments: Comments): Comments
 --- @field format function (item: snacks.picker.Item, _: snacks.Picker): table
@@ -9,16 +15,21 @@ local git = require("pr.provider").get_provider()
 ---@param opts? pr.pickers.PickCommentsConfig
 ---@return nil
 function M.pick_comments(opts)
-	local Snacks = require("snacks")
+	if not Snacks then
+		vim.notify("snacks.nvim not installed; configure a different picker or install snacks", vim.log.levels.WARN)
+		return
+	end
+	local filter = require("pr.pickers.filter")
 
 	opts = opts or {}
 
 	local format = opts.format or M.format_comments
 
 	git.get_comments(vim.schedule_wrap(function(comments)
-		for _, filter in ipairs(opts.filters or {}) do
-			comments = filter(comments)
+		for _, f in ipairs(opts.filters or {}) do
+			comments = f(comments)
 		end
+		comments = filter.apply(comments)
 
 		if next(comments) == nil then
 			vim.notify("No comments to pick")
@@ -26,6 +37,25 @@ function M.pick_comments(opts)
 		end
 
 		return Snacks.picker({
+			title = filter.label() .. "PR Comments",
+			keys = {
+				["R"] = {
+					function(picker)
+						filter.toggle("resolved")
+						picker:close()
+						require("pr.picker").pick_comments()
+					end,
+					desc = "Toggle resolved threads",
+				},
+				["O"] = {
+					function(picker)
+						filter.toggle("outdated")
+						picker:close()
+						require("pr.picker").pick_comments()
+					end,
+					desc = "Toggle outdated threads",
+				},
+			},
 			---@return snacks.picker.finder.Item[]
 			finder = function()
 				local items = {}
@@ -64,6 +94,15 @@ function M.pick_comments(opts)
 			-- 	},
 			-- },
 			format = format,
+			confirm = function(picker, item)
+				picker:close()
+				if not item then
+					return
+				end
+				local abs = require("pr.provider").get_provider().git_root .. "/" .. item.file
+				local line = item.pos and item.pos[1] or nil
+				require("pr.util").open_pr_file(abs, item.file, { line = line })
+			end,
 		})
 	end))
 end
@@ -167,7 +206,10 @@ end
 ---@param format? fun(item: snacks.picker.Item, _: snacks.Picker): table
 ---@return nil
 function M.pick_hunks(format)
-	local Snacks = require("snacks")
+	if not Snacks then
+		vim.notify("snacks.nvim not installed; configure a different picker or install snacks", vim.log.levels.WARN)
+		return
+	end
 
 	format = format or M.format_hunks
 
@@ -215,6 +257,15 @@ function M.pick_hunks(format)
 			-- 	},
 			-- },
 			format = format,
+			confirm = function(picker, item)
+				picker:close()
+				if not item then
+					return
+				end
+				local abs = require("pr.provider").get_provider().git_root .. "/" .. item.file
+				local line = item.pos and item.pos[1] or nil
+				require("pr.util").open_pr_file(abs, item.file, { line = line })
+			end,
 		})
 	end))
 end

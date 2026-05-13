@@ -9,13 +9,15 @@ local git = require("pr.provider").get_provider()
 ---@return nil
 function M.pick_comments(opts)
 	local fzf = require("fzf-lua")
+	local filter = require("pr.pickers.filter")
 
 	opts = opts or {}
 
 	git.get_comments(vim.schedule_wrap(function(comments)
-		for _, filter in ipairs(opts.filters or {}) do
-			comments = filter(comments)
+		for _, f in ipairs(opts.filters or {}) do
+			comments = f(comments)
 		end
+		comments = filter.apply(comments)
 
 		if next(comments) == nil then
 			vim.notify("No comments to pick")
@@ -38,21 +40,35 @@ function M.pick_comments(opts)
 			end
 		end
 
-		fzf.fzf_exec(entries, {
-			prompt = "PR Comments> ",
-			previewer = "builtin",
-			actions = fzf.defaults and fzf.defaults.actions and fzf.defaults.actions.files or {
+		local default_actions = fzf.defaults and fzf.defaults.actions and fzf.defaults.actions.files
+			or {
 				["default"] = function(selected)
 					if not selected or not selected[1] then
 						return
 					end
 					local file, line = selected[1]:match("^([^:]+):(%d+):")
 					if file then
-						vim.cmd("edit " .. vim.fn.fnameescape(file))
-						vim.api.nvim_win_set_cursor(0, { tonumber(line), 0 })
+						local abs = require("pr.provider").get_provider().git_root .. "/" .. file
+						require("pr.util").open_pr_file(abs, file, { line = tonumber(line) })
 					end
 				end,
-			},
+			}
+
+		local actions = vim.tbl_extend("force", default_actions, {
+			["ctrl-r"] = function()
+				filter.toggle("resolved")
+				require("pr.picker").pick_comments()
+			end,
+			["ctrl-o"] = function()
+				filter.toggle("outdated")
+				require("pr.picker").pick_comments()
+			end,
+		})
+
+		fzf.fzf_exec(entries, {
+			prompt = filter.label() .. "PR Comments> ",
+			previewer = "builtin",
+			actions = actions,
 		})
 	end))
 end
@@ -160,8 +176,8 @@ function M.pick_hunks()
 					end
 					local file, line = selected[1]:match("^([^:]+):(%d+):")
 					if file then
-						vim.cmd("edit " .. vim.fn.fnameescape(file))
-						vim.api.nvim_win_set_cursor(0, { tonumber(line), 0 })
+						local abs = require("pr.provider").get_provider().git_root .. "/" .. file
+						require("pr.util").open_pr_file(abs, file, { line = tonumber(line) })
 					end
 				end,
 			},

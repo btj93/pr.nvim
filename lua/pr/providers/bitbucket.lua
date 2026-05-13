@@ -15,9 +15,11 @@ local M = {}
 
 M.git_root = ""
 M.git_user = ""
+M.git_user_uuid = ""
 ---@type RepoInfo
 M.repo_info = {}
 M.pr_number = 0
+M.base_sha = ""
 ---@type Comments
 M.comments = {}
 ---@type Hunks
@@ -32,13 +34,34 @@ local function trim(s)
 	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-local function url_encode(str)
+function M._url_encode(str)
 	if not str then
 		return ""
 	end
 	return (str:gsub("([^%w%-._~])", function(c)
 		return string.format("%%%02X", string.byte(c))
 	end))
+end
+
+--- Parse `git remote get-url origin` output into workspace + repo slug.
+---@param url string
+---@return string|nil workspace
+---@return string|nil repo_slug
+function M._parse_remote_url(url)
+	url = trim(url)
+	local path = url:match("@[^:]+:(.+)%.git$") or url:match("@[^:]+:(.+)$")
+	if not path then
+		path = url:match("://[^/]+/(.+)%.git$") or url:match("://[^/]+/(.+)$")
+	end
+	if not path then
+		return nil, nil
+	end
+	path = trim(path)
+	local workspace, repo_slug = path:match("^([^/]+)/(.+)$")
+	if not workspace or not repo_slug then
+		return nil, nil
+	end
+	return workspace, repo_slug
 end
 
 local function nil_if_vim_nil(v)
@@ -76,8 +99,15 @@ local function run_curl(method, path, body, on_done)
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
+				local stderr = vim.inspect(j:stderr_result() or {})
 				vim.notify("Bitbucket curl failed: " .. table.concat(args, " "))
-				vim.notify(vim.inspect(j:stderr_result()))
+				vim.notify(stderr)
+				-- Curl is universal but auth misconfiguration is the most common cause.
+				if stderr:find("401") or stderr:find("403") then
+					vim.notify("Bitbucket auth failed. Check BITBUCKET_USERNAME / BITBUCKET_APP_PASSWORD env vars or ~/.netrc entry for api.bitbucket.org.")
+				else
+					vim.notify("Is curl installed and api.bitbucket.org reachable?")
+				end
 				on_done(false, nil)
 				return
 			end
@@ -163,6 +193,9 @@ function M.get_git_user(callback)
 			return
 		end
 		M.git_user = data.nickname
+		if data.uuid then
+			M.git_user_uuid = data.uuid
+		end
 		vim.notify("Logged in as " .. M.git_user)
 		callback(M.git_user)
 	end)
@@ -192,16 +225,7 @@ function M.get_repo_info(callback)
 				return
 			end
 			local url = trim(t)
-			local path = url:match("@[^:]+:(.+)%.git$") or url:match("@[^:]+:(.+)$")
-			if not path then
-				path = url:match("://[^/]+/(.+)%.git$") or url:match("://[^/]+/(.+)$")
-			end
-			if not path then
-				vim.api.nvim_echo({ { "Could not determine Bitbucket project from remote 'origin'.", "ErrorMsg" } }, true, {})
-				return
-			end
-			path = trim(path)
-			local workspace, repo_slug = path:match("^([^/]+)/(.+)$")
+			local workspace, repo_slug = M._parse_remote_url(url)
 			if not workspace or not repo_slug then
 				vim.api.nvim_echo({ { "Could not parse workspace/repo from remote URL.", "ErrorMsg" } }, true, {})
 				return
@@ -232,7 +256,7 @@ function M.get_pr_number(callback)
 			end
 			-- Bitbucket's query DSL: filter by source branch + open state.
 			local q = 'source.branch.name="' .. branch .. '"'
-			local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests?state=OPEN&pagelen=5&q=" .. url_encode(q)
+			local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests?state=OPEN&pagelen=5&q=" .. M._url_encode(q)
 			run_curl("GET", path, nil, function(ok, data)
 				if not ok or not data or not data.values or #data.values == 0 then
 					vim.notify("No PR open for this branch")
@@ -271,7 +295,7 @@ end
 
 -- Re-assemble flat Bitbucket comments into root-keyed thread groups by walking
 -- parent links. Orphans (parent ID not in the page) become their own roots.
-local function build_threads(flat)
+function M._build_threads(flat)
 	local by_id = {}
 	for _, c in ipairs(flat) do
 		by_id[c.id] = c
@@ -313,6 +337,124 @@ local function build_threads(flat)
 	return by_root
 end
 
+--- Pure transformation from a parsed Bitbucket Cloud comments page into the
+--- canonical Comments shape. Exposed for unit testing.
+---@param data table Decoded JSON from /pullrequests/:id/comments
+---@param git_user string Authenticated user's nickname (for viewer_did_author).
+---@param current_paths table<string, true>|nil Set of paths in the current diff; when provided, threads anchored on paths not in this set are flagged is_outdated. Pass nil to skip the check (back-compat).
+---@return Comments|nil comments
+---@return integer thread_count
+---@return integer unsolved_count
+--- Returns 3 values: (comments, thread_count, unsolved_count).
+--- Note: gitlab's `_normalize_comments` adds a 4th value (diff_refs).
+function M._normalize_comments(data, git_user, current_paths)
+	if not data or not data.values then
+		return nil, 0, 0
+	end
+
+	local by_root = M._build_threads(data.values)
+
+	---@type Comments
+	local comments = {}
+	local thread_count = 0
+	local unsolved_count = 0
+
+	for root_id, group in pairs(by_root) do
+		local root_comment = nil
+		for _, c in ipairs(group) do
+			if c.id == root_id then
+				root_comment = c
+				break
+			end
+		end
+		if root_comment then
+			local inline = nil_if_vim_nil(root_comment.inline)
+			local file = inline and nil_if_vim_nil(inline.path)
+			local to = inline and nil_if_vim_nil(inline.to)
+			local from = inline and nil_if_vim_nil(inline.from)
+			local end_line = to or from
+			-- When only `to` exists, treat as single-line (start collapses onto end).
+			local start_line = from or to
+
+			if file and end_line then
+				---@type CommentInfo[]
+				local thread_comments = {}
+				for _, c in ipairs(group) do
+					if not c.deleted then
+						local nick = (c.user and c.user.nickname) or (c.user and c.user.display_name) or "unknown"
+						local user_uuid = c.user and c.user.uuid
+						local mine = false
+						if M.git_user_uuid ~= "" and user_uuid and user_uuid == M.git_user_uuid then
+							mine = true
+						elseif git_user ~= "" and nick == git_user then
+							mine = true
+						end
+						table.insert(thread_comments, {
+							database_id = c.id,
+							author = nick,
+							body = (c.content and c.content.raw) or "",
+							start_line = start_line,
+							end_line = end_line,
+							viewer_can_update = mine,
+							viewer_can_react = false,
+							viewer_can_delete = mine,
+							reaction_groups = {},
+							published_at = c.created_on,
+							updated_at = c.updated_on or c.created_on,
+							viewer_did_author = mine,
+						})
+					end
+				end
+
+				if #thread_comments > 0 then
+					local resolution = nil_if_vim_nil(root_comment.resolution)
+					local resolved = resolution ~= nil
+					local resolved_by = nil
+					if resolution and resolution.user then
+						resolved_by = resolution.user.nickname or resolution.user.display_name
+					end
+
+					local outdated = false
+					if current_paths and not current_paths[file] then
+						outdated = true
+					end
+					local composed = {
+						id = tostring(root_id),
+						is_resolved = resolved,
+						resolved_by = resolved_by,
+						is_outdated = outdated,
+						is_collapsed = false,
+						viewer_can_reply = true,
+						viewer_can_resolve = not resolved,
+						viewer_can_unresolve = resolved,
+						comments = thread_comments,
+					}
+
+					local file_threads = comments[file] or {}
+					local found = false
+					for i, th in ipairs(file_threads) do
+						if th.id == composed.id then
+							file_threads[i] = composed
+							found = true
+							break
+						end
+					end
+					if not found then
+						table.insert(file_threads, composed)
+					end
+					comments[file] = file_threads
+					thread_count = thread_count + 1
+					if not resolved then
+						unsolved_count = unsolved_count + 1
+					end
+				end
+			end
+		end
+	end
+
+	return comments, thread_count, unsolved_count
+end
+
 ---
 ---@param callback? fun(comments: Comments)
 function M.get_comments(callback)
@@ -331,102 +473,32 @@ function M.get_comments(callback)
 				if not pr_number then
 					return
 				end
-				local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. pr_number .. "/comments?pagelen=100"
-				run_curl("GET", path, nil, function(ok, data)
-					if not ok or not data or not data.values then
-						return
+				-- Fetch hunks first so we can populate the path-set used by the
+				-- outdated heuristic. M.get_hunks may legitimately return early
+				-- (network error, auth failure, etc.) — in that case the callback
+				-- fires with no hunks captured, and we fall through with
+				-- current_paths_arg = nil so normalization defaults is_outdated
+				-- = false rather than refusing to show comments at all.
+				M.get_hunks(vim.schedule_wrap(function(hunks)
+					local current_paths = {}
+					for p, _ in pairs(hunks or {}) do
+						current_paths[p] = true
 					end
-
-					local by_root = build_threads(data.values)
-
-					---@type Comments
-					local comments = {}
-					local thread_count = 0
-					local unsolved_count = 0
-
-					for root_id, group in pairs(by_root) do
-						local root_comment = nil
-						for _, c in ipairs(group) do
-							if c.id == root_id then
-								root_comment = c
-								break
-							end
+					local current_paths_arg = next(current_paths) and current_paths or nil
+					local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. pr_number .. "/comments?pagelen=100"
+					run_curl("GET", path, nil, function(ok, data)
+						if not ok then
+							return
 						end
-						if root_comment then
-							local inline = nil_if_vim_nil(root_comment.inline)
-							local file = inline and nil_if_vim_nil(inline.path)
-							local line = inline and (nil_if_vim_nil(inline.to) or nil_if_vim_nil(inline.from))
-
-							if file and line then
-								---@type CommentInfo[]
-								local thread_comments = {}
-								for _, c in ipairs(group) do
-									if not c.deleted then
-										local nick = (c.user and c.user.nickname) or (c.user and c.user.display_name) or "unknown"
-										local mine = M.git_user ~= "" and nick == M.git_user
-										table.insert(thread_comments, {
-											database_id = c.id,
-											author = nick,
-											body = (c.content and c.content.raw) or "",
-											start_line = line,
-											end_line = line,
-											viewer_can_update = mine,
-											viewer_can_react = false,
-											viewer_can_delete = mine,
-											reaction_groups = {},
-											published_at = c.created_on,
-											updated_at = c.updated_on or c.created_on,
-											viewer_did_author = mine,
-										})
-									end
-								end
-
-								if #thread_comments > 0 then
-									local resolution = nil_if_vim_nil(root_comment.resolution)
-									local resolved = resolution ~= nil
-									local resolved_by = nil
-									if resolution and resolution.user then
-										resolved_by = resolution.user.nickname or resolution.user.display_name
-									end
-
-									local composed = {
-										id = tostring(root_id),
-										is_resolved = resolved,
-										resolved_by = resolved_by,
-										is_outdated = false,
-										is_collapsed = false,
-										viewer_can_reply = true,
-										viewer_can_resolve = not resolved,
-										viewer_can_unresolve = resolved,
-										comments = thread_comments,
-									}
-
-									local file_threads = comments[file] or {}
-									local found = false
-									for i, th in ipairs(file_threads) do
-										if th.id == composed.id then
-											file_threads[i] = composed
-											found = true
-											break
-										end
-									end
-									if not found then
-										table.insert(file_threads, composed)
-									end
-									comments[file] = file_threads
-									thread_count = thread_count + 1
-									if not resolved then
-										unsolved_count = unsolved_count + 1
-									end
-								end
-							end
+						local comments, thread_count, unsolved_count = M._normalize_comments(data, M.git_user, current_paths_arg)
+						if not comments then
+							return
 						end
-					end
-
-					M.comments = comments
-					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-					callback(comments)
-				end)
+						M.comments = comments
+						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
+						callback(comments)
+					end)
+				end))
 			end))
 		end))
 	end))
@@ -488,6 +560,28 @@ local function ensure_context(fn)
 	end))
 end
 
+--- Resolve the PR's base-branch HEAD commit sha. Used by util.open_pr_file
+--- to fetch the original content of files deleted in the PR.
+---@param callback? fun(sha: string)
+function M.get_base_sha(callback)
+	callback = callback or function(_) end
+	if M.base_sha ~= "" then
+		callback(M.base_sha)
+		return
+	end
+	ensure_context(function(workspace, repo, pr)
+		local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. pr
+		run_curl("GET", path, nil, function(ok, data)
+			if not ok or not data or not data.destination or not data.destination.commit then
+				vim.notify("Could not fetch PR base sha from Bitbucket.")
+				return
+			end
+			M.base_sha = data.destination.commit.hash or ""
+			callback(M.base_sha)
+		end)
+	end)
+end
+
 local function reactions_unsupported(callback)
 	vim.notify("Bitbucket Cloud doesn't support reactions on PR comments.")
 	if callback then
@@ -530,15 +624,15 @@ end
 ---@param callback? fun(success: boolean)
 function M.comment(relative_path, start_line, end_line, body, callback)
 	callback = callback or function(_) end
-	-- Bitbucket Cloud's inline comments are single-line on the destination side;
-	-- start_line is collapsed onto end_line. (Range comments via line ranges
-	-- aren't part of the public REST shape today.)
-	local _ = start_line
 	ensure_context(function(workspace, repo, pr)
 		local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. pr .. "/comments"
+		local inline = { path = relative_path, to = end_line }
+		if start_line and end_line and start_line ~= end_line then
+			inline.from = start_line
+		end
 		run_curl("POST", path, {
 			content = { raw = body },
-			inline = { path = relative_path, to = end_line },
+			inline = inline,
 		}, function(ok)
 			callback(ok)
 		end)
@@ -607,6 +701,8 @@ function M.clear()
 	M.pr_number = 0
 	M.git_root = ""
 	M.git_user = ""
+	M.git_user_uuid = ""
+	M.base_sha = ""
 end
 
 function M.clear_comments()

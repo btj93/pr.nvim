@@ -9,6 +9,8 @@ local Job = require("plenary.job")
 local M = {}
 
 local last_branch = nil
+local last_git_root = nil
+local last_head = nil
 
 --- Asynchronously read the current branch name. Invokes callback with the branch string,
 --- or nil if not in a git repo or the command fails.
@@ -27,21 +29,66 @@ local function get_current_branch(callback)
 	}):start()
 end
 
+--- Asynchronously read the git root (`git rev-parse --show-toplevel`).
+--- Invokes callback with the root path string, or nil if not in a git repo or the command fails.
+local function get_git_root_async(callback)
+	Job:new({
+		command = "git",
+		args = { "rev-parse", "--show-toplevel" },
+		on_exit = vim.schedule_wrap(function(j, code)
+			if code ~= 0 then
+				return callback(nil)
+			end
+			local result = j:result()
+			local t = result and result[1]
+			callback(t)
+		end),
+	}):start()
+end
+
 local function check_branch_and_refresh()
 	if not (comment.enabled or hunk.enabled) then
 		return
 	end
-	get_current_branch(function(branch)
-		if not branch then
+	get_git_root_async(function(new_root)
+		if new_root and last_git_root and new_root ~= last_git_root then
+			vim.notify("Entered different git root, resetting PR state…")
+			-- Capture currently-enabled state BEFORE stop() flips the flags.
+			-- We want to resume what the user had on, not what config defaults say.
+			local was_comment = comment.enabled
+			local was_hunk = hunk.enabled
+			comment.stop()
+			hunk.stop()
+			if type(git.clear) == "function" then
+				git.clear()
+			end
+			last_branch = nil -- branch comparison is meaningless across repos
+			last_head = nil -- HEAD comparison is also meaningless across repos
+			last_git_root = new_root
+			if was_comment then
+				comment.start()
+			end
+			if was_hunk then
+				hunk.start()
+			end
 			return
 		end
-		if last_branch and last_branch ~= branch then
-			vim.notify("Switched to branch '" .. branch .. "', refreshing PR data…")
-			-- Diff against the previous branch's PR is nonsense — suppress it.
-			-- The provider's own "You have N(M) comment threads" notification still fires.
-			M.refresh({ show_diff = false })
+		if new_root and not last_git_root then
+			last_git_root = new_root
 		end
-		last_branch = branch
+
+		get_current_branch(function(branch)
+			if not branch then
+				return
+			end
+			if last_branch and last_branch ~= branch then
+				vim.notify("Switched to branch '" .. branch .. "', refreshing PR data…")
+				-- Diff against the previous branch's PR is nonsense — suppress it.
+				-- The provider's own "You have N(M) comment threads" notification still fires.
+				M.refresh({ show_diff = false })
+			end
+			last_branch = branch
+		end)
 	end)
 end
 
@@ -162,6 +209,68 @@ function M.setup(opts)
 		get_current_branch(function(branch)
 			last_branch = branch
 		end)
+		-- Seed last_git_root so the first DirChanged doesn't trigger a spurious reset.
+		get_git_root_async(function(root)
+			last_git_root = root
+		end)
+		-- Seed last_head so the first BufWritePost doesn't trigger a spurious refresh.
+		Job:new({
+			command = "git",
+			args = { "rev-parse", "HEAD" },
+			on_exit = vim.schedule_wrap(function(j, code)
+				if code == 0 then
+					local r = j:result()
+					local t = r and r[1]
+					if t then
+						last_head = (t or ""):gsub("%s+$", "")
+					end
+				end
+			end),
+		}):start()
+	end
+
+	if config.opts.auto_refresh and config.opts.auto_refresh.on_head_change then
+		vim.api.nvim_create_autocmd("BufWritePost", {
+			group = vim.api.nvim_create_augroup("PRHeadChange", { clear = true }),
+			callback = function(args)
+				if not (comment.enabled or hunk.enabled) then
+					return
+				end
+				-- Only react to writes inside the PR's working tree. Saving a buffer
+				-- in an unrelated repo would otherwise run `git rev-parse HEAD` in
+				-- that repo's directory and trip a spurious "HEAD changed" notify.
+				local root = git.git_root
+				if root == "" then
+					return
+				end
+				local saved_path = args.file or vim.api.nvim_buf_get_name(args.buf or 0)
+				if saved_path == "" or saved_path:sub(1, #root) ~= root then
+					return
+				end
+				Job:new({
+					command = "git",
+					args = { "-C", root, "rev-parse", "HEAD" },
+					on_exit = vim.schedule_wrap(function(j, code)
+						if code ~= 0 then
+							return
+						end
+						local result = j:result()
+						local _, t = next(result)
+						if not t then
+							return
+						end
+						local new_head = (t or ""):gsub("%s+$", "")
+						if last_head and new_head ~= last_head then
+							vim.notify("HEAD changed (" .. last_head:sub(1, 7) .. " → " .. new_head:sub(1, 7) .. "), refreshing PR data…")
+							-- HEAD rotated, so cached HEAD content is stale.
+							require("pr.drift").invalidate_all()
+							M.refresh({ show_diff = false })
+						end
+						last_head = new_head
+					end),
+				}):start()
+			end,
+		})
 	end
 
 	if config.opts.auto_refresh then
@@ -176,6 +285,9 @@ function M.refresh(opts)
 	if type(git.clear_pr_number) == "function" then
 		git.clear_pr_number()
 	end
+	pcall(function()
+		require("pr.drift").invalidate_all()
+	end)
 	comment.refresh(opts)
 	hunk.refresh()
 end

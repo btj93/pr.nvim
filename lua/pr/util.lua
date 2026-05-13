@@ -1,3 +1,5 @@
+local Job = require("plenary.job")
+
 local M = {}
 
 ---
@@ -133,6 +135,89 @@ function M.parse_diff_hunks(diff_lines)
 	save_current_block()
 
 	return hunks_by_file
+end
+
+-- In-flight set keyed by the eventual scratch buffer name (`pr://<path>@<sha>`).
+-- Prevents racing duplicate fetches when the user opens the same deleted-in-PR
+-- file twice before the first `git show` completes.
+local _inflight_fetches = {}
+
+--- Open a PR-touched file. If the file exists on disk, behaves like `:edit`.
+--- If it doesn't (e.g. a file deleted by the PR), fetches the base-commit
+--- content via `git show <base>:<relative_path>` and loads it into a
+--- read-only scratch buffer named `pr://<path>@<base_sha>`.
+---
+---@param absolute_path string  Absolute path under the git root.
+---@param relative_path string  Path relative to git_root (used for `git show`).
+---@param opts? { line?: integer }
+function M.open_pr_file(absolute_path, relative_path, opts)
+	opts = opts or {}
+
+	local stat = vim.uv.fs_stat(absolute_path)
+	if stat and stat.type == "file" then
+		vim.cmd("edit " .. vim.fn.fnameescape(absolute_path))
+		if opts.line then
+			pcall(vim.api.nvim_win_set_cursor, 0, { opts.line, 0 })
+		end
+		return
+	end
+
+	-- File missing on disk — fetch base content.
+	local git = require("pr.provider").get_provider()
+	git.get_base_sha(vim.schedule_wrap(function(base_sha)
+		if not base_sha or base_sha == "" then
+			vim.notify("File not on disk and no PR base sha available: " .. relative_path)
+			return
+		end
+
+		local name = "pr://" .. relative_path .. "@" .. base_sha:sub(1, 7)
+		-- If we've already loaded this exact (path, base) pair this session,
+		-- just switch to that buffer instead of erroring on duplicate name.
+		local existing = vim.fn.bufnr(name)
+		if existing ~= -1 and vim.api.nvim_buf_is_valid(existing) then
+			vim.api.nvim_set_current_buf(existing)
+			if opts.line then
+				pcall(vim.api.nvim_win_set_cursor, 0, { opts.line, 0 })
+			end
+			return
+		end
+
+		if _inflight_fetches[name] then
+			return
+		end
+		_inflight_fetches[name] = true
+
+		Job:new({
+			command = "git",
+			args = { "-C", git.git_root, "show", base_sha .. ":" .. relative_path },
+			on_exit = vim.schedule_wrap(function(j, code)
+				_inflight_fetches[name] = nil
+				if code ~= 0 then
+					vim.notify("File not in PR base commit: " .. relative_path)
+					return
+				end
+				local content = j:result() or {}
+				vim.cmd("enew")
+				local buf = vim.api.nvim_get_current_buf()
+				vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+				-- Defensive: race between bufnr check above and now. pcall avoids
+				-- crashing if a parallel call already grabbed the name.
+				pcall(vim.api.nvim_buf_set_name, buf, name)
+				vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
+				vim.api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
+				vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+				vim.api.nvim_set_option_value("modified", false, { buf = buf })
+				local ft = vim.filetype.match({ filename = relative_path })
+				if ft then
+					vim.api.nvim_set_option_value("filetype", ft, { buf = buf })
+				end
+				if opts.line then
+					pcall(vim.api.nvim_win_set_cursor, 0, { opts.line, 0 })
+				end
+				vim.notify("Opened base-commit content for deleted-in-PR file: " .. relative_path)
+			end),
+		}):start()
+	end))
 end
 
 return M

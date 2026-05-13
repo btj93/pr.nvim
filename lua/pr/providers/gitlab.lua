@@ -10,6 +10,7 @@ M.git_user = ""
 ---  used to address the project in `glab api` URLs.)
 M.repo_info = {}
 M.pr_number = 0
+M.base_sha = ""
 
 --- DiffRefs required when posting a new inline comment. Populated as a side-effect
 --- of `get_comments` (returned by the same GraphQL query) and used by `M.comment`.
@@ -28,7 +29,7 @@ M.hunks = {}
 -- Canonical reaction keys are uppercase ASCII names (GitHub GraphQL enum values
 -- plus a curated set of GitLab extras). The rest of the plugin only speaks
 -- canonical keys; we translate to/from GitLab award-emoji names at the boundary.
-local REACTION_TO_AWARD = {
+M._REACTION_TO_AWARD = {
 	THUMBS_UP = "thumbsup",
 	THUMBS_DOWN = "thumbsdown",
 	-- LAUGH maps to gemoji `smile` (😄) — the glyph GitHub uses for its LAUGH reaction.
@@ -45,7 +46,7 @@ local REACTION_TO_AWARD = {
 }
 -- Inverse mapping. Some canonical keys accept multiple inbound names
 -- (e.g. LAUGH accepts both `smile` and `laughing`).
-local AWARD_TO_REACTION = {
+M._AWARD_TO_REACTION = {
 	thumbsup = "THUMBS_UP",
 	thumbsdown = "THUMBS_DOWN",
 	smile = "LAUGH",
@@ -78,7 +79,7 @@ M.reaction_palette = {
 	{ content = "CLAP", glyph = "👏" },
 }
 
-local function url_encode(str)
+function M._url_encode(str)
 	if not str then
 		return ""
 	end
@@ -92,7 +93,7 @@ local function trim(s)
 end
 
 -- "gid://gitlab/Note/12345" -> 12345
-local function parse_global_id(gid)
+function M._parse_global_id(gid)
 	if type(gid) ~= "string" then
 		return nil
 	end
@@ -102,7 +103,7 @@ end
 
 -- Discussions are addressed by a hex hash, not a numeric id.
 -- "gid://gitlab/Discussion/abc123" -> "abc123"
-local function parse_discussion_id(gid)
+function M._parse_discussion_id(gid)
 	if type(gid) ~= "string" then
 		return nil
 	end
@@ -116,8 +117,192 @@ local function nil_if_vim_nil(v)
 	return v
 end
 
+--- Parse `git remote get-url origin` output into namespace path + slug.
+--- Returns nil on a URL we don't recognise.
+---@param url string
+---@return string|nil owner Namespace path (may contain slashes for nested groups). Empty string for single-segment paths; nil for unrecognised URLs.
+---@return string|nil repo Project slug
+---@return string|nil project_path Full namespace/project path
+function M._parse_remote_url(url)
+	url = trim(url)
+	local path = url:match("@[^:]+:(.+)%.git$") or url:match("@[^:]+:(.+)$")
+	if not path then
+		path = url:match("://[^/]+/(.+)%.git$") or url:match("://[^/]+/(.+)$")
+	end
+	if not path then
+		return nil, nil, nil
+	end
+	path = trim(path)
+	local owner, repo = path:match("^(.+)/([^/]+)$")
+	if not owner then
+		return "", path, path
+	end
+	return owner, repo, path
+end
+
+--- Pure transformation from a parsed `glab api graphql` response into the
+--- canonical Comments shape. Exposed for unit testing.
+---@param data table Decoded JSON from glab api graphql
+---@param git_user string The authenticated user's nickname (used to derive viewer_did_author).
+---@return Comments|nil comments
+---@return integer thread_count
+---@return integer unsolved_count
+---@return GitLabDiffRefs|nil diff_refs
+function M._normalize_comments(data, git_user)
+	if not data or not data.data or not data.data.project or not data.data.project.mergeRequest then
+		return nil, 0, 0, nil
+	end
+	local mr = data.data.project.mergeRequest
+
+	local diff_refs = nil
+	if mr.diffRefs and mr.diffRefs ~= vim.NIL then
+		diff_refs = {
+			base_sha = mr.diffRefs.baseSha,
+			head_sha = mr.diffRefs.headSha,
+			start_sha = mr.diffRefs.startSha,
+		}
+	end
+
+	---@type Comments
+	local comments = {}
+	local thread_count = 0
+	local unsolved_count = 0
+
+	for _, discussion in ipairs(mr.discussions.nodes or {}) do
+		---@type CommentInfo[]
+		local thread = {}
+		local file = nil
+		local thread_is_outdated = false
+
+		for _, note in ipairs(discussion.notes.nodes or {}) do
+			local pos = nil_if_vim_nil(note.position)
+			if not note.system and pos then
+				local new_path = nil_if_vim_nil(pos.newPath)
+				local old_path = nil_if_vim_nil(pos.oldPath)
+				local path = new_path or old_path
+				local new_line = nil_if_vim_nil(pos.newLine)
+				local old_line = nil_if_vim_nil(pos.oldLine)
+				local line = new_line or old_line
+				local note_is_outdated = new_line == nil and old_line ~= nil
+				if note_is_outdated then
+					thread_is_outdated = true
+				end
+
+				if path and line then
+					file = file or path
+
+					local start_line = line
+					local end_line = line
+					local line_range = nil_if_vim_nil(pos.lineRange)
+					if line_range then
+						local rs = nil_if_vim_nil(line_range.start)
+						local re = nil_if_vim_nil(line_range["end"])
+						if rs then
+							local rs_new = nil_if_vim_nil(rs.newLine)
+							local rs_old = nil_if_vim_nil(rs.oldLine)
+							start_line = rs_new or rs_old or line
+						end
+						if re then
+							local re_new = nil_if_vim_nil(re.newLine)
+							local re_old = nil_if_vim_nil(re.oldLine)
+							end_line = re_new or re_old or line
+						end
+					end
+
+					local groups_by_content = {}
+					local award_nodes = (note.awardEmoji and note.awardEmoji.nodes) or {}
+					for _, ae in ipairs(award_nodes) do
+						local content_key = M._AWARD_TO_REACTION[ae.name] or string.upper(ae.name)
+						if not groups_by_content[content_key] then
+							groups_by_content[content_key] = {
+								content = content_key,
+								viewerHasReacted = false,
+								reactors = { totalCount = 0, nodes = {} },
+							}
+						end
+						local g = groups_by_content[content_key]
+						g.reactors.totalCount = g.reactors.totalCount + 1
+						local user_login = (ae.user and ae.user.username) or "unknown"
+						if git_user ~= "" and user_login == git_user then
+							g.viewerHasReacted = true
+						end
+						table.insert(g.reactors.nodes, {
+							database_id = M._parse_global_id(ae.id),
+							content = content_key,
+							user = user_login,
+						})
+					end
+					local reaction_groups = {}
+					for _, g in pairs(groups_by_content) do
+						table.insert(reaction_groups, g)
+					end
+
+					local author_login = (note.author and note.author.username) or "unknown"
+					local perm = note.userPermissions or {}
+
+					table.insert(thread, {
+						database_id = M._parse_global_id(note.id),
+						author = author_login,
+						body = note.body,
+						start_line = start_line,
+						end_line = end_line,
+						viewer_can_update = perm.adminNote or false,
+						viewer_can_react = perm.awardEmoji ~= false, -- nil means "not explicitly forbidden"
+						viewer_can_delete = perm.adminNote or false,
+						reaction_groups = reaction_groups,
+						published_at = note.createdAt,
+						updated_at = note.updatedAt,
+						viewer_did_author = git_user ~= "" and author_login == git_user,
+					})
+				end
+			end
+		end
+
+		if file and #thread > 0 then
+			local file_threads = comments[file] or {}
+			local resolvable = discussion.resolvable or false
+			local resolved = discussion.resolved or false
+			local resolved_by = nil
+			if discussion.resolvedBy and discussion.resolvedBy ~= vim.NIL then
+				resolved_by = discussion.resolvedBy.username
+			end
+
+			local composed = {
+				id = M._parse_discussion_id(discussion.id),
+				is_resolved = resolved,
+				resolved_by = resolved_by,
+				is_outdated = thread_is_outdated,
+				is_collapsed = false,
+				viewer_can_reply = true,
+				viewer_can_resolve = resolvable and not resolved,
+				viewer_can_unresolve = resolvable and resolved,
+				comments = thread,
+			}
+
+			local found = false
+			for i, th in ipairs(file_threads) do
+				if th.id == composed.id then
+					file_threads[i] = composed
+					found = true
+					break
+				end
+			end
+			if not found then
+				table.insert(file_threads, composed)
+			end
+			comments[file] = file_threads
+			thread_count = thread_count + 1
+			if not resolved then
+				unsolved_count = unsolved_count + 1
+			end
+		end
+	end
+
+	return comments, thread_count, unsolved_count, diff_refs
+end
+
 local function project_url()
-	return "/projects/" .. url_encode(M.repo_info.project_path)
+	return "/projects/" .. M._url_encode(M.repo_info.project_path)
 end
 
 local function mr_url()
@@ -240,23 +425,12 @@ function M.get_repo_info(callback)
 				return
 			end
 			local url = trim(t)
-			-- git@host:group[/subgroup...]/project[.git]
-			local path = url:match("@[^:]+:(.+)%.git$") or url:match("@[^:]+:(.+)$")
-			-- proto://host/group[/subgroup...]/project[.git]
-			if not path then
-				path = url:match("://[^/]+/(.+)%.git$") or url:match("://[^/]+/(.+)$")
-			end
-			if not path then
+			local owner, repo, project_path = M._parse_remote_url(url)
+			if not project_path then
 				vim.api.nvim_echo({ { "Could not determine GitLab project from remote 'origin'.", "ErrorMsg" } }, true, {})
 				return
 			end
-			path = trim(path)
-			local owner, repo = path:match("^(.+)/([^/]+)$")
-			if not owner then
-				owner = ""
-				repo = path
-			end
-			M.repo_info = { owner = owner, repo = repo, project_path = path }
+			M.repo_info = { owner = owner, repo = repo, project_path = project_path }
 			callback(owner, repo)
 		end),
 	}):start()
@@ -317,6 +491,45 @@ function M.get_commit_hash(callback)
 	}):start()
 end
 
+--- Resolve the MR's base-branch HEAD commit sha. Used by util.open_pr_file
+--- to fetch the original content of files deleted in the MR.
+---@param callback? fun(sha: string)
+function M.get_base_sha(callback)
+	callback = callback or function(_) end
+	if M.base_sha ~= "" then
+		callback(M.base_sha)
+		return
+	end
+
+	-- diff_refs is populated as a side-effect of get_comments; fall through to
+	-- a direct REST call when it's not yet available.
+	if M.diff_refs and M.diff_refs.base_sha then
+		M.base_sha = M.diff_refs.base_sha
+		callback(M.base_sha)
+		return
+	end
+
+	ensure_context(function()
+		local project_id = M._url_encode(M.repo_info.project_path)
+		Job:new({
+			command = "glab",
+			args = { "api", "/projects/" .. project_id .. "/merge_requests/" .. M.pr_number, "--jq", ".diff_refs.base_sha" },
+			on_exit = vim.schedule_wrap(function(j, code)
+				if code ~= 0 then
+					vim.notify("Could not fetch MR base sha. Is glab installed?")
+					return
+				end
+				local result = j:result()
+				local _, t = next(result)
+				if t then
+					M.base_sha = t
+				end
+				callback(M.base_sha)
+			end),
+		}):start()
+	end)
+end
+
 local DISCUSSIONS_QUERY = [[
 query($fullPath: ID!, $iid: String!) {
   project(fullPath: $fullPath) {
@@ -345,6 +558,10 @@ query($fullPath: ID!, $iid: String!) {
                 oldLine
                 newPath
                 oldPath
+                lineRange {
+                  start { newLine oldLine }
+                  end { newLine oldLine }
+                }
               }
               awardEmoji {
                 nodes {
@@ -408,133 +625,19 @@ function M.get_comments(callback)
 
 						local body = table.concat(j:result(), "\n")
 						local ok, data = pcall(vim.json.decode, body)
-						if not ok or not data or not data.data or not data.data.project or not data.data.project.mergeRequest then
+						if not ok then
 							vim.notify("Unexpected GraphQL response structure.")
 							return
 						end
 
-						local mr = data.data.project.mergeRequest
-
-						if mr.diffRefs and mr.diffRefs ~= vim.NIL then
-							M.diff_refs = {
-								base_sha = mr.diffRefs.baseSha,
-								head_sha = mr.diffRefs.headSha,
-								start_sha = mr.diffRefs.startSha,
-							}
+						local comments, thread_count, unsolved_count, diff_refs = M._normalize_comments(data, M.git_user)
+						if not comments then
+							vim.notify("Unexpected GraphQL response structure.")
+							return
 						end
 
-						---@type Comments
-						local comments = {}
-						local thread_count = 0
-						local unsolved_count = 0
-
-						for _, discussion in ipairs(mr.discussions.nodes or {}) do
-							---@type CommentInfo[]
-							local thread = {}
-							local file = nil
-
-							for _, note in ipairs(discussion.notes.nodes or {}) do
-								local pos = nil_if_vim_nil(note.position)
-								if not note.system and pos then
-									local new_path = nil_if_vim_nil(pos.newPath)
-									local old_path = nil_if_vim_nil(pos.oldPath)
-									local path = new_path or old_path
-									local new_line = nil_if_vim_nil(pos.newLine)
-									local old_line = nil_if_vim_nil(pos.oldLine)
-									local line = new_line or old_line
-
-									if path and line then
-										file = file or path
-
-										local groups_by_content = {}
-										local award_nodes = (note.awardEmoji and note.awardEmoji.nodes) or {}
-										for _, ae in ipairs(award_nodes) do
-											local content_key = AWARD_TO_REACTION[ae.name] or string.upper(ae.name)
-											if not groups_by_content[content_key] then
-												groups_by_content[content_key] = {
-													content = content_key,
-													viewerHasReacted = false,
-													reactors = { totalCount = 0, nodes = {} },
-												}
-											end
-											local g = groups_by_content[content_key]
-											g.reactors.totalCount = g.reactors.totalCount + 1
-											local user_login = (ae.user and ae.user.username) or "unknown"
-											if M.git_user ~= "" and user_login == M.git_user then
-												g.viewerHasReacted = true
-											end
-											table.insert(g.reactors.nodes, {
-												database_id = parse_global_id(ae.id),
-												content = content_key,
-												user = user_login,
-											})
-										end
-										local reaction_groups = {}
-										for _, g in pairs(groups_by_content) do
-											table.insert(reaction_groups, g)
-										end
-
-										local author_login = (note.author and note.author.username) or "unknown"
-										local perm = note.userPermissions or {}
-
-										table.insert(thread, {
-											database_id = parse_global_id(note.id),
-											author = author_login,
-											body = note.body,
-											start_line = line,
-											end_line = line,
-											viewer_can_update = perm.adminNote or false,
-											viewer_can_react = perm.awardEmoji ~= false,
-											viewer_can_delete = perm.adminNote or false,
-											reaction_groups = reaction_groups,
-											published_at = note.createdAt,
-											updated_at = note.updatedAt,
-											viewer_did_author = M.git_user ~= "" and author_login == M.git_user,
-										})
-									end
-								end
-							end
-
-							if file and #thread > 0 then
-								local file_threads = comments[file] or {}
-								local resolvable = discussion.resolvable or false
-								local resolved = discussion.resolved or false
-								local resolved_by = nil
-								if discussion.resolvedBy and discussion.resolvedBy ~= vim.NIL then
-									resolved_by = discussion.resolvedBy.username
-								end
-
-								local composed = {
-									id = parse_discussion_id(discussion.id),
-									is_resolved = resolved,
-									resolved_by = resolved_by,
-									-- GitLab GraphQL doesn't surface an `isOutdated` equivalent on
-									-- discussions/positions. Leaving false until a heuristic exists.
-									is_outdated = false,
-									is_collapsed = false,
-									viewer_can_reply = true,
-									viewer_can_resolve = resolvable and not resolved,
-									viewer_can_unresolve = resolvable and resolved,
-									comments = thread,
-								}
-
-								local found = false
-								for i, th in ipairs(file_threads) do
-									if th.id == composed.id then
-										file_threads[i] = composed
-										found = true
-										break
-									end
-								end
-								if not found then
-									table.insert(file_threads, composed)
-								end
-								comments[file] = file_threads
-								thread_count = thread_count + 1
-								if not resolved then
-									unsolved_count = unsolved_count + 1
-								end
-							end
+						if diff_refs then
+							M.diff_refs = diff_refs
 						end
 
 						M.comments = comments
@@ -595,7 +698,7 @@ end
 function M.add_reaction(comment_id, reaction_key, callback)
 	callback = callback or function(_) end
 	ensure_context(function()
-		local award_name = REACTION_TO_AWARD[reaction_key] or string.lower(reaction_key)
+		local award_name = M._REACTION_TO_AWARD[reaction_key] or string.lower(reaction_key)
 		run_glab({
 			"api",
 			"--method",
@@ -683,11 +786,8 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 			callback(false)
 			return
 		end
-		-- Multi-line inline comments via line_range exist on GitLab but require
-		-- line_code (sha1 of path + line). Keeping single-line for v1; widen
-		-- later when needed. start_line is intentionally collapsed onto end_line.
-		local _ = start_line
-		run_glab({
+
+		local args = {
 			"api",
 			"--method",
 			"POST",
@@ -708,7 +808,14 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 			"position[old_path]=" .. relative_path,
 			"-F",
 			"position[new_line]=" .. end_line,
-		}, function(ok)
+		}
+		if start_line and end_line and start_line ~= end_line then
+			table.insert(args, "-F")
+			table.insert(args, "position[line_range][start][new_line]=" .. start_line)
+			table.insert(args, "-F")
+			table.insert(args, "position[line_range][end][new_line]=" .. end_line)
+		end
+		run_glab(args, function(ok)
 			callback(ok)
 		end)
 	end)
@@ -797,6 +904,7 @@ function M.clear()
 	M.git_root = ""
 	M.git_user = ""
 	M.diff_refs = nil
+	M.base_sha = ""
 end
 
 function M.clear_comments()

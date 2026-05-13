@@ -17,12 +17,14 @@
 --   M.pr_number        integer                 cached PR/MR number (0 when unset)
 --   M.git_root         string                  working tree root (empty when unset)
 --   M.git_user         string                  authenticated user login (empty when unset)
+--   M.base_sha         string                  cached PR base-branch HEAD commit sha (empty when unset)
 --   M.reaction_palette ReactionPaletteEntry[]  addable reactions; empty array hides the emoji action
 --
 -- Functions (each callback fires on the main thread):
 --   get_repo_info(callback?)                                       -> callback(owner, repo)
 --   get_pr_number(callback?)                                       -> callback(pr_number)
 --   get_commit_hash(callback?)                                     -> callback(hash)
+--   get_base_sha(callback?)                                        -> callback(sha)
 --   get_git_root(callback?)                                        -> callback(git_root)
 --   get_git_user(callback?)                                        -> callback(git_user)
 --   get_comments(callback?)                                        -> callback(comments)

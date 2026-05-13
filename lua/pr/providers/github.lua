@@ -11,6 +11,7 @@ M.git_user = ""
 ---@type RepoInfo
 M.repo_info = {}
 M.pr_number = 0
+M.base_sha = ""
 
 ---@type Comments
 M.comments = {}
@@ -29,6 +30,116 @@ M.reaction_palette = {
 	{ content = "ROCKET", glyph = "🚀" },
 	{ content = "EYES", glyph = "👀" },
 }
+
+--- Pure transformation from a parsed `gh api graphql` reviewThreads response
+--- into the canonical Comments shape. Exposed for unit testing.
+---@param data table Decoded JSON from gh api graphql
+---@return Comments|nil comments
+---@return integer thread_count
+---@return integer unsolved_count
+--- Returns 3 values: (comments, thread_count, unsolved_count).
+--- Note: gitlab's `_normalize_comments` adds a 4th value (diff_refs).
+function M._normalize_comments(data)
+	if not data or not data.data or not data.data.repository or not data.data.repository.pullRequest or not data.data.repository.pullRequest.reviewThreads then
+		return nil, 0, 0
+	end
+	local threads = data.data.repository.pullRequest.reviewThreads.edges
+
+	---@type Comments
+	local comments = {}
+	local thread_count = 0
+	local unsolved_count = 0
+
+	for _, thread_edge in ipairs(threads) do
+		---@type CommentInfo[]
+		local thread = {}
+		local file = ""
+		local thread_info = thread_edge.node
+		for _, comment_edge in ipairs(thread_info.comments.edges) do
+			local comment = comment_edge.node
+			if comment.line ~= vim.NIL or comment.originalLine ~= vim.NIL then
+				local line = comment.line
+				if comment.line == vim.NIL then
+					line = comment.originalLine
+				end
+
+				local start_line = comment.startLine
+				if comment.startLine == vim.NIL then
+					if comment.originalStartLine == vim.NIL then
+						start_line = line
+					else
+						start_line = comment.originalStartLine
+					end
+				end
+				file = comment.path
+				local author = comment.author and comment.author.login or "unknown"
+				local reactionGroups = comment.reactionGroups
+
+				local reactions_by_content = {}
+				for _, reaction in ipairs(comment.reactions.nodes) do
+					if not reactions_by_content[reaction.content] then
+						reactions_by_content[reaction.content] = {}
+					end
+					table.insert(reactions_by_content[reaction.content], {
+						database_id = reaction.databaseId,
+						content = reaction.content,
+						user = reaction.user.login,
+					})
+				end
+
+				for _, reactionGroup in ipairs(reactionGroups) do
+					reactionGroup.reactors.nodes = reactions_by_content[reactionGroup.content]
+				end
+
+				table.insert(thread, {
+					database_id = comment.databaseId,
+					author = author,
+					body = comment.body,
+					start_line = start_line,
+					end_line = line,
+					viewer_can_update = comment.viewerCanUpdate,
+					viewer_can_react = comment.viewerCanReact,
+					viewer_can_delete = comment.viewerCanDelete,
+					reaction_groups = comment.reactionGroups,
+					published_at = comment.publishedAt,
+					updated_at = comment.updatedAt,
+					viewer_did_author = comment.viewerDidAuthor,
+				})
+			end
+		end
+		local c = comments[file] or {}
+		local composed = {
+			id = thread_info.id,
+			is_resolved = thread_info.isResolved,
+			resolved_by = thread_info.resolvedBy ~= vim.NIL and thread_info.resolvedBy.login or nil,
+			is_outdated = thread_info.isOutdated,
+			is_collapsed = thread_info.isCollapsed,
+			viewer_can_reply = thread_info.viewerCanReply,
+			viewer_can_resolve = thread_info.viewerCanResolve,
+			viewer_can_unresolve = thread_info.viewerCanUnresolve,
+			comments = thread,
+		}
+
+		local found = false
+		for i, th in ipairs(c) do
+			if th.id == thread_info.id then
+				c[i] = composed
+				found = true
+				break
+			end
+		end
+		if not found then
+			table.insert(c, composed)
+		end
+		comments[file] = c
+		thread_count = thread_count + 1
+		if not thread_info.isResolved then
+			unsolved_count = unsolved_count + 1
+		end
+	end
+
+	return comments, thread_count, unsolved_count
+end
 
 ---
 ---@param callback? fun(owner: string, repo: string)
@@ -105,6 +216,34 @@ function M.get_pr_number(callback)
 				M.pr_number = pr_number
 			end
 			callback(pr_number)
+		end),
+	}):start()
+end
+
+--- Resolve the PR's base-branch HEAD commit sha. Used by util.open_pr_file
+--- to fetch the original content of files deleted in the PR.
+---@param callback? fun(sha: string)
+function M.get_base_sha(callback)
+	callback = callback or function(_) end
+	if M.base_sha ~= "" then
+		callback(M.base_sha)
+		return
+	end
+
+	Job:new({
+		command = "gh",
+		args = { "pr", "view", "--json", "baseRefOid", "--jq", ".baseRefOid" },
+		on_exit = vim.schedule_wrap(function(j, code)
+			if code ~= 0 then
+				vim.notify("Could not fetch PR base sha. Is a gh cli installed?")
+				return
+			end
+			local result = j:result()
+			local _, t = next(result)
+			if t then
+				M.base_sha = t
+			end
+			callback(M.base_sha)
 		end),
 	}):start()
 end
@@ -254,110 +393,13 @@ function M.get_comments(callback)
 					end
 
 					local data = vim.json.decode(t)
-					if not data or not data.data or not data.data.repository or not data.data.repository.pullRequest then
+					local comments, thread_count, unsolved_count = M._normalize_comments(data)
+					if not comments then
 						vim.notify("Unexpected GraphQL response structure.")
 						return
 					end
 
-					local threads = data.data.repository.pullRequest.reviewThreads.edges
-
-					---@type Comments
-					local comments = {}
-					local thread_count = 0
-					local unsolved_count = 0
-
-					for _, thread_edge in ipairs(threads) do
-						---@type CommentInfo[]
-						local thread = {}
-						local file = ""
-						local thread_info = thread_edge.node
-						for _, comment_edge in ipairs(thread_info.comments.edges) do
-							local comment = comment_edge.node
-							-- vim.notify(vim.inspect(comment))
-							if comment.line ~= vim.NIL or comment.originalLine ~= vim.NIL then
-								local line = comment.line
-								if comment.line == vim.NIL then
-									line = comment.originalLine
-								end
-
-								local start_line = comment.startLine
-								if comment.startLine == vim.NIL then
-									if comment.originalStartLine == vim.NIL then
-										start_line = line
-									else
-										start_line = comment.originalStartLine
-									end
-								end
-								file = comment.path
-								local author = comment.author and comment.author.login or "unknown"
-								local reactionGroups = comment.reactionGroups
-
-								local reactions_by_content = {}
-								for _, reaction in ipairs(comment.reactions.nodes) do
-									if not reactions_by_content[reaction.content] then
-										reactions_by_content[reaction.content] = {}
-									end
-
-									table.insert(reactions_by_content[reaction.content], {
-										database_id = reaction.databaseId,
-										content = reaction.content,
-										user = reaction.user.login,
-									})
-								end
-
-								for _, reactionGroup in ipairs(reactionGroups) do
-									reactionGroup.reactors.nodes = reactions_by_content[reactionGroup.content]
-								end
-
-								table.insert(thread, {
-									database_id = comment.databaseId,
-									author = author,
-									body = comment.body,
-									start_line = start_line,
-									end_line = line,
-									viewer_can_update = comment.viewerCanUpdate,
-									viewer_can_react = comment.viewerCanReact,
-									viewer_can_delete = comment.viewerCanDelete,
-									reaction_groups = comment.reactionGroups,
-									published_at = comment.publishedAt,
-									updated_at = comment.updatedAt,
-									viewer_did_author = comment.viewerDidAuthor,
-								})
-							end
-						end
-						local c = comments[file] or {}
-						local composed = {
-							id = thread_info.id,
-							is_resolved = thread_info.isResolved,
-							resolved_by = thread_info.resolvedBy ~= vim.NIL and thread_info.resolvedBy.login or nil,
-							is_outdated = thread_info.isOutdated,
-							is_collapsed = thread_info.isCollapsed,
-							viewer_can_reply = thread_info.viewerCanReply,
-							viewer_can_resolve = thread_info.viewerCanResolve,
-							viewer_can_unresolve = thread_info.viewerCanUnresolve,
-							comments = thread,
-						}
-
-						local found = false
-						for i, th in ipairs(c) do
-							if th.id == thread_info.id then
-								c[i] = composed
-								found = true
-								break
-							end
-						end
-						if not found then
-							table.insert(c, composed)
-						end
-						comments[file] = c
-						thread_count = thread_count + 1
-						if not thread_info.isResolved then
-							unsolved_count = unsolved_count + 1
-						end
-					end
-
 					M.comments = comments
-
 					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
 					callback(comments)
 				end,
@@ -893,6 +935,7 @@ function M.clear()
 	M.pr_number = 0
 	M.git_root = ""
 	M.git_user = ""
+	M.base_sha = ""
 end
 
 function M.clear_comments()
