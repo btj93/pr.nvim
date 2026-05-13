@@ -1,64 +1,34 @@
+-- Shared types (RepoInfo, ReviewThread, CommentInfo, Comments, Hunk, Hunks,
+-- ReactionPaletteEntry, ...) are declared in pr.providers.interface; see that
+-- file for the full provider contract.
+
 local Job = require("plenary.job")
+local util = require("pr.util")
 local M = {}
 
 M.git_root = ""
 M.git_user = ""
---- @class RepoInfo
---- @field owner string?
---- @field repo string?
+---@type RepoInfo
 M.repo_info = {}
 M.pr_number = 0
 
---- @class ReviewThread
---- @field id string
---- @field is_resolved boolean
---- @field resolved_by string
---- @field is_outdated boolean
---- @field is_collapsed boolean
---- @field viewer_can_reply boolean
---- @field viewer_can_resolve boolean
---- @field viewer_can_unresolve boolean
---- @field comments CommentInfo[]
-
---- @class CommentInfo
---- @field database_id integer
---- @field author string
---- @field body string
---- @field published_at string
---- @field updated_at string
---- @field viewer_did_author boolean
---- @field start_line integer
---- @field end_line integer
---- @field viewer_can_update boolean
---- @field viewer_can_react boolean
---- @field viewer_can_delete boolean
---- @field reaction_groups table<CommentReactionGroup>
----
---- @class CommentReactionGroup
---- @field content string
---- @field viewerHasReacted boolean
---- @field reactors CommentReactionReactors
----
---- @class CommentReactionReactors
---- @field totalCount integer
---- @field nodes CommentReactionReactorsNode[]
----
---- @class CommentReactionReactorsNode
---- @field database_id integer
---- @field content string
---- @field user string
----
----@alias Comments table<string, ReviewThread[]>
 ---@type Comments
 M.comments = {}
 
----@alias Hunks table<string, Hunk[]>
----@class Hunk
----@field hunk_start integer
----@field hunk_end integer
----@field type string
 ---@type Hunks
 M.hunks = {}
+
+---@type ReactionPaletteEntry[]
+M.reaction_palette = {
+	{ content = "THUMBS_UP", glyph = "👍" },
+	{ content = "THUMBS_DOWN", glyph = "👎" },
+	{ content = "LAUGH", glyph = "😄" },
+	{ content = "HOORAY", glyph = "🎉" },
+	{ content = "CONFUSED", glyph = "😕" },
+	{ content = "HEART", glyph = "❤️" },
+	{ content = "ROCKET", glyph = "🚀" },
+	{ content = "EYES", glyph = "👀" },
+}
 
 ---
 ---@param callback? fun(owner: string, repo: string)
@@ -463,108 +433,6 @@ function M.get_git_user(callback)
 	}):start()
 end
 
---- Parses diff lines into a table of change blocks, keyed by filename.
---- This function is a modified version of the provided reference script to support multiple files.
----@param diff_lines table A table of strings, where each string is a line from the diff output.
----@return Hunks A table where keys are filenames and values are lists of Hunk objects.
-local function parse_diff_hunks(diff_lines)
-	---@type Hunks
-	local hunks_by_file = {}
-
-	-- State for the current file being processed
-	local current_file = nil
-	local line_num_in_buffer = -1 -- -1 indicates we are outside a valid hunk body
-
-	-- State for the current contiguous block of changes (+/- lines)
-	local block_start_line = 0
-	local block_end_line = 0
-	local has_add = false
-	local has_del = false
-
-	-- Helper function to finalize and save the current change block to the correct file
-	local function save_current_block()
-		if current_file and block_start_line > 0 then
-			-- For pure deletions, the change happens at a single line number
-			-- so the end line is the same as the start line.
-			local final_end_line = block_end_line
-			if has_del and not has_add then
-				final_end_line = block_start_line
-			end
-
-			table.insert(hunks_by_file[current_file], {
-				hunk_start = block_start_line,
-				hunk_end = final_end_line,
-				type = (has_add and has_del and "Change") or (has_del and "Del") or "Add",
-			})
-		end
-
-		-- Reset for the next block
-		block_start_line = 0
-		block_end_line = 0
-		has_add = false
-		has_del = false
-	end
-
-	for _, line in ipairs(diff_lines) do
-		-- Check for the start of a new file's diff
-		local diff_file = line:match("^diff %-%-git a/.+ b/(.+)$")
-		if diff_file then
-			-- A new file starts, so save any pending block from the *previous* file
-			save_current_block()
-
-			-- Set up for the new file
-			current_file = diff_file
-			hunks_by_file[current_file] = {} -- Initialize the list of hunks for this file
-			line_num_in_buffer = -1 -- Reset line counter
-			goto continue
-		end
-
-		-- Don't process anything until we've identified the first file
-		if not current_file then
-			goto continue
-		end
-
-		-- Check for a hunk header to update the line number
-		local start_line_str = line:match("^@@ %-.+ %+([0-9]+)")
-		if start_line_str then
-			-- A new hunk starts, so save any pending block from the *previous* hunk
-			save_current_block()
-			-- Adjust the line counter to be the line *before* the first line of the hunk
-			line_num_in_buffer = tonumber(start_line_str) - 1
-			goto continue
-		end
-
-		-- Process lines within a hunk body (+, -, or space)
-		if line_num_in_buffer >= 0 then
-			if line:sub(1, 1) == " " then -- Context line
-				-- A context line ends the current block of changes. Save it.
-				save_current_block()
-				line_num_in_buffer = line_num_in_buffer + 1
-			elseif line:sub(1, 1) == "+" then -- Addition
-				if block_start_line == 0 then
-					block_start_line = line_num_in_buffer + 1
-				end
-				line_num_in_buffer = line_num_in_buffer + 1
-				block_end_line = line_num_in_buffer -- The end of the block is this new line
-				has_add = true
-			elseif line:sub(1, 1) == "-" then -- Deletion
-				if block_start_line == 0 then
-					-- The change block starts at the current line in the new file
-					block_start_line = line_num_in_buffer + 1
-				end
-				-- Deletions do not advance the line number in the new file
-				has_del = true
-			end
-		end
-		::continue::
-	end
-
-	-- After the loop, save any final pending block for the last file
-	save_current_block()
-
-	return hunks_by_file
-end
-
 ---
 ---@param callback function?(hunks: Hunks)
 function M.get_hunks(callback)
@@ -605,7 +473,7 @@ function M.get_hunks(callback)
 						return
 					end
 
-					M.hunks = parse_diff_hunks(diff_lines)
+					M.hunks = util.parse_diff_hunks(diff_lines)
 
 					callback(M.hunks)
 				end,
@@ -1016,7 +884,7 @@ function M.delete_comment(comment_id, callback)
 end
 
 -- Exposed for unit testing only; do not rely on this from plugin consumers.
-M._parse_diff_hunks = parse_diff_hunks
+M._parse_diff_hunks = util.parse_diff_hunks
 
 function M.clear()
 	M.comments = {}

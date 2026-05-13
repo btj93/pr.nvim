@@ -27,16 +27,18 @@ local M = {}
 -- TODO: validate with version number
 M.drafts = {}
 
-local reaction_contents = {
-	CONFUSED = "😕",
-	EYES = "👀",
-	HEART = "❤️",
-	HOORAY = "🎉",
-	LAUGH = "😄",
-	ROCKET = "🚀",
-	THUMBS_DOWN = "👎",
-	THUMBS_UP = "👍",
-}
+local function glyph_for(content)
+	if git and git.reaction_palette then
+		for _, entry in ipairs(git.reaction_palette) do
+			if entry.content == content then
+				return entry.glyph
+			end
+		end
+	end
+	-- Reactions outside the active provider's palette (e.g. an award placed via
+	-- the GitLab web UI with an emoji we don't list) show their raw shortcode.
+	return ":" .. tostring(content):lower() .. ":"
+end
 
 M.reply_actions = {
 	submit = {},
@@ -865,20 +867,53 @@ end
 local function make_emoji_menu(comment_id, reaction_groups, winid, row, refresh)
 	local items = {}
 
-	local space_count = 6
+	-- Index existing reaction groups by content for O(1) palette lookup.
+	local existing = {}
+	for _, rg in pairs(reaction_groups or {}) do
+		existing[rg.content] = rg
+	end
 
-	for _, reaction in pairs(reaction_groups) do
-		local count_digits = #tostring(reaction.reactors.totalCount)
-		-- TODO: adjust col based on longest item
+	-- Show palette entries first (in palette order, including addable-but-unused
+	-- ones with count 0). Then append any non-palette reactions that already
+	-- exist on this comment, so the user can still remove them.
+	local ordered = {}
+	local seen = {}
+	if git.reaction_palette then
+		for _, entry in ipairs(git.reaction_palette) do
+			table.insert(ordered, entry.content)
+			seen[entry.content] = true
+		end
+	end
+	for _, rg in pairs(reaction_groups or {}) do
+		if not seen[rg.content] then
+			table.insert(ordered, rg.content)
+			seen[rg.content] = true
+		end
+	end
+
+	local space_count = 6
+	for _, content in ipairs(ordered) do
+		local rg = existing[content]
+		local count = (rg and rg.reactors and rg.reactors.totalCount) or 0
+		local count_digits = #tostring(count)
 		if count_digits > space_count then
 			space_count = count_digits + 2
 		end
+	end
 
+	for _, content in ipairs(ordered) do
+		local reaction = existing[content] or {
+			content = content,
+			viewerHasReacted = false,
+			reactors = { totalCount = 0, nodes = {} },
+		}
+		local count_digits = #tostring(reaction.reactors.totalCount)
 		local sep = string.rep(" ", space_count - count_digits)
+		local glyph = glyph_for(content)
 
-		local text = NuiText(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount)
+		local text = NuiText(glyph .. sep .. reaction.reactors.totalCount)
 		if reaction.viewerHasReacted then
-			text:set(reaction_contents[reaction.content] .. sep .. reaction.reactors.totalCount, config.opts.highlights.hl_emoji)
+			text:set(glyph .. sep .. reaction.reactors.totalCount, config.opts.highlights.hl_emoji)
 		end
 		table.insert(
 			items,
@@ -958,7 +993,7 @@ function M.format_reaction(reaction_group)
 	local reactions = {}
 	for _, reaction in ipairs(reaction_group) do
 		if reaction.reactors.totalCount > 0 then
-			table.insert(reactions, "( " .. reaction_contents[reaction.content] .. " " .. reaction.reactors.totalCount .. " )")
+			table.insert(reactions, "( " .. glyph_for(reaction.content) .. " " .. reaction.reactors.totalCount .. " )")
 		end
 	end
 	return "   " .. table.concat(reactions, " | ")
@@ -1133,22 +1168,30 @@ function M._start_inline_edit(thread, comment, ctx)
 	local body_start = ctx.body_range.body_start
 	local body_end = ctx.body_range.body_end
 
+	-- Mutable mirrors of body_start / body_end that track shifts caused by ANY
+	-- buffer edit (in-range or out-of-range). Without this, an out-of-range
+	-- edit that changes line count (e.g. pressing <CR> on a header line)
+	-- would leave us reading body from the wrong rows on restore — and the
+	-- user would lose their in-flight body edits.
+	local current_body_start = body_start
+	local current_body_end = body_end
+
 	local dim_ns = vim.api.nvim_create_namespace("PRCommentEditDim")
 	local function place_dim()
 		vim.api.nvim_buf_clear_namespace(bufnr, dim_ns, 0, -1)
 		local total = vim.api.nvim_buf_line_count(bufnr)
-		for i = 0, body_start - 2 do
+		for i = 0, current_body_start - 2 do
 			vim.api.nvim_buf_set_extmark(bufnr, dim_ns, i, 0, { line_hl_group = "PRCommentEditDim" })
 		end
-		for i = body_end, total - 1 do
+		for i = current_body_end, total - 1 do
 			vim.api.nvim_buf_set_extmark(bufnr, dim_ns, i, 0, { line_hl_group = "PRCommentEditDim" })
 		end
 	end
 
-	local current_body_end = body_end
 	local detached = false
 	local skip_commit_on_leave = false
 	local autocmd_id
+	local cursor_clamp_id
 
 	-- Snapshot the body to compare against on InsertLeave.
 	local original_body = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, body_end, false)
@@ -1165,10 +1208,14 @@ function M._start_inline_edit(thread, comment, ctx)
 			pcall(vim.api.nvim_del_autocmd, autocmd_id)
 			autocmd_id = nil
 		end
+		if cursor_clamp_id then
+			pcall(vim.api.nvim_del_autocmd, cursor_clamp_id)
+			cursor_clamp_id = nil
+		end
 	end
 
 	local function commit()
-		local body_lines = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, current_body_end, false)
+		local body_lines = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
 		local body_text = table.concat(body_lines, "\n")
 		git.edit_comment(
 			comment.database_id,
@@ -1198,23 +1245,82 @@ function M._start_inline_edit(thread, comment, ctx)
 	vim.b[bufnr].pr_edit_comment_id = comment.database_id
 	place_dim()
 
+	-- Snapshot the lines outside the editable body so we can splice them back
+	-- on an out-of-range edit. Using `:undo` was unsafe here — in insert mode
+	-- vim batches keystrokes into one undo block, and `nvim_buf_set_lines`
+	-- from the popup's initial render is its own undo step, so a single
+	-- mid-insert `:undo` could step all the way back to an empty buffer.
+	local before_snapshot = vim.api.nvim_buf_get_lines(bufnr, 0, body_start - 1, false)
+	local after_snapshot = vim.api.nvim_buf_get_lines(bufnr, body_end, -1, false)
+	local restoring = false
+
 	vim.api.nvim_buf_attach(bufnr, false, {
 		on_lines = function(_, _, _, firstline, lastline, new_lastline)
 			if detached then
 				return true
 			end
-			if firstline < body_start - 1 or lastline > current_body_end then
-				vim.schedule(function()
-					if detached then
-						return
-					end
-					vim.cmd("silent! undo")
-					vim.notify("Edit reverted: changes must be inside the focused comment.")
-					place_dim()
-				end)
-			else
-				current_body_end = current_body_end + (new_lastline - lastline)
+			if restoring then
+				return
 			end
+
+			local delta = new_lastline - lastline
+			-- Body range in 0-indexed exclusive form: [current_body_start - 1, current_body_end).
+			local body_first = current_body_start - 1
+			local body_last_excl = current_body_end
+
+			-- In-range: change is fully inside body. Just track the size delta.
+			if firstline >= body_first and lastline <= body_last_excl then
+				current_body_end = current_body_end + delta
+				return
+			end
+
+			-- Out-of-range: account for any line-count shift caused by the bad change
+			-- BEFORE we read body — otherwise we'd read the wrong rows and corrupt
+			-- the user's in-flight body edits on restore.
+			if lastline <= body_first then
+				-- Bad change happened entirely BEFORE body. Body shifts by delta.
+				current_body_start = current_body_start + delta
+				current_body_end = current_body_end + delta
+			end
+			-- If the bad change happens entirely AFTER body, body's position is unchanged.
+			-- If it overlaps body, we can't cleanly separate the user's body edits from
+			-- the corruption — the splice will use whatever's at the (now-ambiguous) body
+			-- rows. Documented v1 trade-off.
+
+			vim.schedule(function()
+				if detached then
+					return
+				end
+				restoring = true
+				-- Read body from its CURRENT (post-shift) position so legitimate body
+				-- edits are preserved across the restore.
+				local body_lines = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
+				vim.bo[bufnr].modifiable = true
+				local restored = {}
+				for _, l in ipairs(before_snapshot) do
+					table.insert(restored, l)
+				end
+				for _, l in ipairs(body_lines) do
+					table.insert(restored, l)
+				end
+				for _, l in ipairs(after_snapshot) do
+					table.insert(restored, l)
+				end
+				vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, restored)
+				-- After the splice, body sits back at its original absolute position
+				-- (defined by before_snapshot's length). Reset the trackers.
+				current_body_start = #before_snapshot + 1
+				current_body_end = current_body_start + #body_lines - 1
+				place_dim()
+				if ctx.winid and vim.api.nvim_win_is_valid(ctx.winid) then
+					pcall(vim.api.nvim_win_set_cursor, ctx.winid, { current_body_start, 0 })
+				end
+				vim.notify("Edit reverted: changes must be inside the focused comment.")
+				-- Clear the flag AFTER the on_lines for our restore has fired.
+				vim.schedule(function()
+					restoring = false
+				end)
+			end)
 		end,
 	})
 
@@ -1235,11 +1341,39 @@ function M._start_inline_edit(thread, comment, ctx)
 				exit_no_commit()
 				return
 			end
-			local current_body = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, current_body_end, false)
+			local current_body = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
 			if vim.deep_equal(current_body, original_body) then
 				exit_no_commit()
 			else
 				commit()
+			end
+		end,
+	})
+
+	-- Clamp the cursor to the body range while edit mode is active. Fires on
+	-- every cursor move in both normal and insert mode; if the cursor strays
+	-- above current_body_start or below current_body_end (e.g. user arrow-keyed
+	-- onto a header), it gets snapped back. This is the primary mechanism
+	-- preventing out-of-range edits; the on_lines snapshot-restore is now a
+	-- defensive backstop for rare paths the autocmd can't intercept.
+	cursor_clamp_id = vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+		buffer = bufnr,
+		callback = function()
+			if detached or not ctx.winid or not vim.api.nvim_win_is_valid(ctx.winid) then
+				return
+			end
+			local pos = vim.api.nvim_win_get_cursor(ctx.winid)
+			local row, col = pos[1], pos[2]
+			local target = row
+			if row < current_body_start then
+				target = current_body_start
+			elseif row > current_body_end then
+				target = current_body_end
+			end
+			if target ~= row then
+				-- Clamp column to the target line's length (set_cursor errors otherwise).
+				local line_len = #(vim.api.nvim_buf_get_lines(bufnr, target - 1, target, false)[1] or "")
+				pcall(vim.api.nvim_win_set_cursor, ctx.winid, { target, math.min(col, line_len) })
 			end
 		end,
 	})
@@ -1255,7 +1389,13 @@ M.actions = {
 		popup_hint = "[E]moji",
 		show_hint = true,
 		can_perform = function(_, comment)
-			return comment.viewer_can_react
+			if not comment.viewer_can_react then
+				return false
+			end
+			-- Hide the emoji action when the active provider has no palette
+			-- (e.g. bitbucket — no reaction support on PR comments).
+			local palette = git.reaction_palette
+			return palette ~= nil and #palette > 0
 		end,
 		perform = function(_, comment, _, popup_winid, ctx)
 			-- In the unified comments view, anchor the menu to the row of the
