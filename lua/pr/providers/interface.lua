@@ -19,6 +19,8 @@
 --   M.git_user         string                  authenticated user login (empty when unset)
 --   M.base_sha         string                  cached PR base-branch HEAD commit sha (empty when unset)
 --   M.pr_list          table<string, PRSummary[]>  cached PR summaries keyed by filter
+--   M.pr_metadata      PRMetadata?                  cached PR metadata
+--   M.checks           CheckRun[]                   cached CI check runs
 --   M.reaction_palette ReactionPaletteEntry[]  addable reactions; empty array hides the emoji action
 --
 -- Functions (each callback fires on the main thread):
@@ -41,6 +43,10 @@
 --   thread_url(thread, comment)                                    -> string?  (synchronous URL formatter)
 --   list_prs(filter, callback)                                     -> callback(prs: PRSummary[])
 --   checkout_pr(pr_number, callback)                               -> callback(success: boolean, err: string?)
+--   get_pr_metadata(callback)                                    -> callback(metadata: PRMetadata)
+--   update_pr_metadata(fields, callback)                         -> callback(success: boolean, err: string?)
+--   get_checks(callback)                                         -> callback(checks: CheckRun[])
+--   clear_pr_metadata() / clear_checks()
 --   clear() / clear_comments() / clear_hunks() / clear_pr_number() / clear_pr_list()
 --
 -- thread.id, comment.database_id, and reactor.database_id are opaque to
@@ -122,5 +128,30 @@
 ---@field is_mine boolean
 ---@field is_assignee boolean
 ---@field is_review_requested boolean
+
+---@class PRMetadata
+---@field number integer
+---@field title string
+---@field body string
+---@field state "open"|"draft"|"closed"|"merged"
+---@field author string
+---@field head_ref string
+---@field base_ref string
+---@field labels string[]
+---@field reviewers ReviewerStatus[]
+---@field assignees string[]
+---@field url string
+---@field updated_at string
+
+---@class ReviewerStatus
+---@field user string
+---@field state "approved"|"changes_requested"|"commented"|"pending"
+
+---@class CheckRun
+---@field name string
+---@field status "queued"|"in_progress"|"completed"
+---@field conclusion "success"|"failure"|"cancelled"|"skipped"|"neutral"|nil
+---@field duration_seconds integer?
+---@field url string
 
 return {}

@@ -50,6 +50,32 @@ M.reply_actions = {
 -- content width (78 = 80 - left/right border) must stay in sync.
 local BODY_WIDTH = 78
 
+--- Map a CheckRun's status/conclusion to a single-glyph indicator. Used by
+--- _render_pr_info and the (future) checks menu to keep glyphs consistent.
+---@param c CheckRun
+---@return string
+local function check_glyph(c)
+	if c.status ~= "completed" then
+		return "…"
+	end
+	if c.conclusion == "success" then
+		return "✔"
+	end
+	if c.conclusion == "failure" then
+		return "✖"
+	end
+	if c.conclusion == "cancelled" then
+		return "○"
+	end
+	if c.conclusion == "skipped" then
+		return "⤼"
+	end
+	return "?"
+end
+
+-- Exposed for unit testing only.
+M._check_glyph = check_glyph
+
 --- Number of visual rows `lines` will occupy in a window of the given content `width`
 --- when 'wrap' is enabled. Used to size popup boxes that contain wrapped comment text.
 ---@param lines string[]
@@ -140,6 +166,49 @@ end
 
 -- Exposed for unit testing only.
 M._render_thread = render_thread
+
+---Pure: produce the array of lines for the PR info popup buffer.
+---Header, body, label/reviewer/assignee rows, optional checks line, action hint.
+---@param metadata PRMetadata
+---@param checks CheckRun[]|nil
+---@return string[]
+function M._render_pr_info(metadata, checks)
+	local lines = {}
+	table.insert(lines, string.format("PR #%d · %s", metadata.number, metadata.title or ""))
+	table.insert(
+		lines,
+		string.format("@%s wants to merge %s ← %s · %s", metadata.author or "", metadata.base_ref or "", metadata.head_ref or "", metadata.state or "")
+	)
+	table.insert(lines, "")
+	for _, l in ipairs(vim.split(metadata.body or "", "\n", { plain = true })) do
+		table.insert(lines, l)
+	end
+	table.insert(lines, "")
+
+	local labels_str = (#metadata.labels > 0) and table.concat(metadata.labels, ", ") or "—"
+	table.insert(lines, "── labels:    " .. labels_str)
+
+	local reviewer_strs = {}
+	for _, r in ipairs(metadata.reviewers or {}) do
+		table.insert(reviewer_strs, string.format("@%s (%s)", r.user, r.state))
+	end
+	table.insert(lines, "── reviewers: " .. ((#reviewer_strs > 0) and table.concat(reviewer_strs, ", ") or "—"))
+
+	local assignees_str = (#metadata.assignees > 0) and table.concat(metadata.assignees, ", ") or "—"
+	table.insert(lines, "── assignees: " .. assignees_str)
+
+	if checks and #checks > 0 then
+		local check_strs = {}
+		for _, c in ipairs(checks) do
+			table.insert(check_strs, string.format("%s %s", check_glyph(c), c.name))
+		end
+		table.insert(lines, "── checks:    " .. table.concat(check_strs, " · "))
+	end
+
+	table.insert(lines, "")
+	table.insert(lines, "[e] edit  [c] open check log  [u] refresh  [q] close")
+	return lines
+end
 
 --- Compute the bottom-border-style hint string for one comment, mirroring
 --- `get_popup_hints` but as a single pre-formatted string suitable for virt_text.
@@ -886,6 +955,139 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	end)
 
 	return layout
+end
+
+---Build a read-mode PR info popup layout.
+---Single read-only popup whose body is rendered by `M._render_pr_info`. Action
+---keymaps (`e`, `c`, `u`, `q`) dispatch through `callbacks`; the orchestration
+---module (Task 7) supplies their concrete implementations.
+---@param metadata PRMetadata
+---@param checks CheckRun[]|nil
+---@param callbacks { on_edit: fun(), on_refresh: fun(), on_check_menu: fun() }
+---@return NuiLayout
+function M.make_pr_info_layout(metadata, checks, callbacks)
+	local popup = Popup({
+		border = {
+			style = "rounded",
+			text = { top = string.format(" PR #%d ", metadata.number) },
+		},
+		buf_options = {
+			modifiable = false,
+			readonly = true,
+			filetype = "markdown",
+		},
+		win_options = {
+			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
+			wrap = true,
+			spell = false,
+			foldenable = false,
+		},
+		enter = true,
+	})
+
+	local layout =
+		Layout({ position = "50%", size = { width = 90, height = 30 }, relative = "editor" }, Layout.Box({ Layout.Box(popup, { size = "100%" }) }, { dir = "col" }))
+
+	popup:on(event.BufWinEnter, function()
+		vim.bo[popup.bufnr].modifiable = true
+		vim.api.nvim_buf_set_lines(popup.bufnr, 0, -1, false, M._render_pr_info(metadata, checks))
+		vim.bo[popup.bufnr].modifiable = false
+	end)
+
+	popup:map("n", "q", function()
+		layout:unmount()
+	end, { noremap = true })
+	popup:map("n", "e", function()
+		callbacks.on_edit()
+	end, { noremap = true })
+	popup:map("n", "u", function()
+		callbacks.on_refresh()
+	end, { noremap = true })
+	popup:map("n", "c", function()
+		callbacks.on_check_menu()
+	end, { noremap = true })
+
+	return layout
+end
+
+---Build the title+body edit popups for a PR.
+---@param metadata PRMetadata
+---@param callbacks { on_submit: fun(fields: { title: string, body: string }) }
+---@return NuiLayout
+function M.make_pr_edit_layout(metadata, callbacks)
+	local title_popup = Popup({
+		border = { style = "rounded", text = { top = " Title " } },
+		buf_options = { modifiable = true },
+		enter = true,
+	})
+	local body_popup = Popup({
+		border = { style = "rounded", text = { top = " Body " } },
+		buf_options = { modifiable = true, filetype = "markdown" },
+		win_options = { wrap = true, spell = false, foldenable = false },
+	})
+
+	local layout = Layout(
+		{ position = "50%", size = { width = 90, height = 30 }, relative = "editor" },
+		Layout.Box({
+			Layout.Box(title_popup, { size = 3 }),
+			Layout.Box(body_popup, { grow = 1 }),
+		}, { dir = "col" })
+	)
+
+	-- Seed initial content before mount so the buffers carry the existing
+	-- title/body when the user enters edit mode.
+	vim.api.nvim_buf_set_lines(title_popup.bufnr, 0, -1, false, { metadata.title or "" })
+	vim.api.nvim_buf_set_lines(body_popup.bufnr, 0, -1, false, vim.split(metadata.body or "", "\n", { plain = true }))
+
+	local function submit()
+		local title = table.concat(vim.api.nvim_buf_get_lines(title_popup.bufnr, 0, -1, false), " ")
+		local body = table.concat(vim.api.nvim_buf_get_lines(body_popup.bufnr, 0, -1, false), "\n")
+		callbacks.on_submit({ title = title, body = body })
+		layout:unmount()
+	end
+
+	local function cancel()
+		layout:unmount()
+	end
+
+	for _, p in ipairs({ title_popup, body_popup }) do
+		p:map({ "n", "i" }, "<C-s>", submit, { noremap = true })
+		p:map("n", "<Esc><Esc>", cancel, { noremap = true })
+		p:map("n", "q", cancel, { noremap = true })
+	end
+
+	return layout
+end
+
+---Build a menu listing CI checks. `on_select` receives the URL of the chosen check.
+---@param checks CheckRun[]
+---@param on_select fun(url: string)
+---@return NuiMenu
+function M.make_checks_menu(checks, on_select)
+	local items = {}
+	for _, c in ipairs(checks or {}) do
+		table.insert(items, Menu.item(check_glyph(c) .. " " .. (c.name or ""), { url = c.url or "" }))
+	end
+	if #items == 0 then
+		table.insert(items, Menu.item("(no checks)"))
+	end
+
+	return Menu({
+		position = "50%",
+		size = { width = 60, height = math.min(#items + 2, 15) },
+		border = { style = "rounded", text = { top = " Checks " } },
+	}, {
+		lines = items,
+		on_submit = function(item)
+			if item and item.url and item.url ~= "" then
+				on_select(item.url)
+			end
+		end,
+		keymap = {
+			close = { "q", "<Esc>" },
+			submit = { "<CR>" },
+		},
+	})
 end
 
 --- Build the ordered list of emoji-menu entries for a comment. Pure function

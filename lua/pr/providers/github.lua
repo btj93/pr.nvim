@@ -22,6 +22,12 @@ M.hunks = {}
 ---@type table<string, PRSummary[]>
 M.pr_list = {}
 
+---@type PRMetadata?
+M.pr_metadata = nil
+
+---@type CheckRun[]|nil
+M.checks = nil
+
 ---@type ReactionPaletteEntry[]
 M.reaction_palette = {
 	{ content = "THUMBS_UP", glyph = "👍" },
@@ -184,6 +190,84 @@ function M._normalize_prs(raw)
 			is_mine = author == M.git_user,
 			is_assignee = is_assignee,
 			is_review_requested = is_rr,
+		})
+	end
+	return out
+end
+
+---@param raw table  decoded JSON from `gh pr view --json ...`
+---@return PRMetadata
+function M._normalize_pr_metadata(raw)
+	local labels = {}
+	for _, l in ipairs(raw.labels or {}) do
+		if l.name then
+			table.insert(labels, l.name)
+		end
+	end
+	local reviewers = {}
+	for _, rr in ipairs(raw.reviewRequests or {}) do
+		if rr.login then
+			table.insert(reviewers, { user = rr.login, state = "pending" })
+		end
+	end
+	for _, lr in ipairs(raw.latestReviews or {}) do
+		local user = lr.author and lr.author.login or "?"
+		local s = string.lower(lr.state or "commented")
+		table.insert(reviewers, { user = user, state = s })
+	end
+	local assignees = {}
+	for _, a in ipairs(raw.assignees or {}) do
+		if a.login then
+			table.insert(assignees, a.login)
+		end
+	end
+	local state
+	if raw.isDraft then
+		state = "draft"
+	else
+		state = string.lower(raw.state or "open")
+	end
+	return {
+		number = raw.number,
+		title = raw.title or "",
+		body = raw.body or "",
+		state = state,
+		author = raw.author and raw.author.login or "",
+		head_ref = raw.headRefName or "",
+		base_ref = raw.baseRefName or "",
+		labels = labels,
+		reviewers = reviewers,
+		assignees = assignees,
+		url = raw.url or "",
+		updated_at = raw.updatedAt or "",
+	}
+end
+
+---@param raw table[]|nil  decoded JSON array from `gh pr checks --json ...`
+---@return CheckRun[]
+function M._normalize_checks(raw)
+	local out = {}
+	for _, c in ipairs(raw or {}) do
+		local state = string.upper(c.state or "")
+		local status, conclusion
+		if state == "QUEUED" then
+			status, conclusion = "queued", nil
+		elseif state == "IN_PROGRESS" then
+			status, conclusion = "in_progress", nil
+		else
+			status = "completed"
+			if state == "" then
+				conclusion = nil
+			else
+				conclusion = string.lower(state)
+			end
+		end
+		table.insert(out, {
+			name = c.name or "",
+			status = status,
+			conclusion = conclusion,
+			duration_seconds = nil,
+			url = c.link or "",
 		})
 	end
 	return out
@@ -1081,6 +1165,134 @@ function M.checkout_pr(pr_number, callback)
 	}):start()
 end
 
+---@param callback fun(metadata: PRMetadata?)
+function M.get_pr_metadata(callback)
+	callback = callback or function(_) end
+	if M.pr_metadata then
+		callback(M.pr_metadata)
+		return
+	end
+	M.get_pr_number(vim.schedule_wrap(function(pr_number)
+		if not pr_number or pr_number == 0 then
+			return callback(nil)
+		end
+		Job:new({
+			command = "gh",
+			args = {
+				"pr",
+				"view",
+				tostring(pr_number),
+				"--json",
+				"number,title,body,state,isDraft,author,headRefName,baseRefName,labels,reviewRequests,latestReviews,assignees,url,updatedAt",
+			},
+			on_exit = vim.schedule_wrap(function(j, code)
+				if code ~= 0 then
+					vim.notify("Error running gh pr view. Is a gh cli installed?")
+					return callback(nil)
+				end
+				local out = j:result() or {}
+				local body = table.concat(out, "\n")
+				if body == "" then
+					return callback(nil)
+				end
+				local ok, raw = pcall(vim.fn.json_decode, body)
+				if not ok or type(raw) ~= "table" then
+					vim.notify("Error parsing gh pr view output")
+					return callback(nil)
+				end
+				M.pr_metadata = M._normalize_pr_metadata(raw)
+				callback(M.pr_metadata)
+			end),
+		}):start()
+	end))
+end
+
+function M.clear_pr_metadata()
+	M.pr_metadata = nil
+end
+
+---@param callback fun(checks: CheckRun[])
+function M.get_checks(callback)
+	callback = callback or function(_) end
+	if M.checks then
+		return callback(M.checks)
+	end
+	M.get_pr_number(vim.schedule_wrap(function(pr_number)
+		if not pr_number or pr_number == 0 then
+			return callback({})
+		end
+		Job:new({
+			command = "gh",
+			args = { "pr", "checks", tostring(pr_number), "--json", "name,state,startedAt,completedAt,link" },
+			on_exit = vim.schedule_wrap(function(j, _code)
+				-- Note: `gh pr checks` exits non-zero when any check failed/pending;
+				-- we still want to display them, so we parse stdout regardless of exit code.
+				local out = j:result() or {}
+				local body = table.concat(out, "\n")
+				if body == "" then
+					M.checks = {}
+					return callback({})
+				end
+				local ok, raw = pcall(vim.fn.json_decode, body)
+				if not ok or type(raw) ~= "table" then
+					return callback({})
+				end
+				M.checks = M._normalize_checks(raw)
+				callback(M.checks)
+			end),
+		}):start()
+	end))
+end
+
+function M.clear_checks()
+	M.checks = nil
+end
+
+---@param fields { title?: string, body?: string }
+---@param callback fun(success: boolean, err: string?)
+function M.update_pr_metadata(fields, callback)
+	callback = callback or function(_, _) end
+	M.get_pr_number(vim.schedule_wrap(function(pr_number)
+		if not pr_number or pr_number == 0 then
+			return callback(false, "no PR")
+		end
+		local args = { "pr", "edit", tostring(pr_number) }
+		if fields.title and fields.title ~= "" then
+			table.insert(args, "--title")
+			table.insert(args, fields.title)
+		end
+		if fields.body and fields.body ~= "" then
+			table.insert(args, "--body")
+			table.insert(args, fields.body)
+		end
+		if #args == 3 then
+			return callback(false, "nothing to update")
+		end
+		local stderr_lines = {}
+		Job:new({
+			command = "gh",
+			args = args,
+			on_stderr = function(_, line)
+				if line and line ~= "" then
+					table.insert(stderr_lines, line)
+				end
+			end,
+			on_exit = vim.schedule_wrap(function(_, code)
+				M.pr_metadata = nil -- force refetch on next get
+				if code ~= 0 then
+					local err = table.concat(stderr_lines, "\n")
+					if err == "" then
+						err = "gh pr edit exited " .. tostring(code)
+					end
+					vim.notify(err, vim.log.levels.ERROR)
+					return callback(false, err)
+				end
+				callback(true)
+			end),
+		}):start()
+	end))
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -1090,6 +1302,8 @@ function M.clear()
 	M.git_user = ""
 	M.base_sha = ""
 	M.pr_list = {}
+	M.pr_metadata = nil
+	M.checks = nil
 end
 
 function M.clear_comments()

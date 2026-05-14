@@ -27,6 +27,10 @@ M.comments = {}
 M.hunks = {}
 ---@type table<string, PRSummary[]>
 M.pr_list = {}
+---@type PRMetadata?
+M.pr_metadata = nil
+---@type CheckRun[]|nil
+M.checks = nil
 
 -- Canonical reaction keys are uppercase ASCII names (GitHub GraphQL enum values
 -- plus a curated set of GitLab extras). The rest of the plugin only speaks
@@ -936,6 +940,37 @@ function M.clear_pr_list()
 	M.pr_list = {}
 end
 
+---@param callback fun(metadata: PRMetadata?)
+function M.get_pr_metadata(callback)
+	vim.notify("get_pr_metadata not implemented yet for gitlab")
+	if callback then
+		callback(nil)
+	end
+end
+
+---@param _fields { title?: string, body?: string }
+---@param callback fun(success: boolean, err: string?)
+function M.update_pr_metadata(_fields, callback)
+	if callback then
+		callback(false, "not implemented")
+	end
+end
+
+---@param callback fun(checks: CheckRun[])
+function M.get_checks(callback)
+	if callback then
+		callback({})
+	end
+end
+
+function M.clear_pr_metadata()
+	M.pr_metadata = nil
+end
+
+function M.clear_checks()
+	M.checks = nil
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -946,6 +981,8 @@ function M.clear()
 	M.diff_refs = nil
 	M.base_sha = ""
 	M.pr_list = {}
+	M.pr_metadata = nil
+	M.checks = nil
 end
 
 function M.clear_comments()

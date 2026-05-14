@@ -198,6 +198,16 @@ function M.setup(opts)
 		require("pr.picker").pick_prs()
 	end, { desc = "List PRs and switch into one" })
 
+	vim.api.nvim_create_user_command("PRInfo", function(arg)
+		require("pr.pr_info").show(arg.args == "edit" and "edit" or "view")
+	end, {
+		nargs = "?",
+		complete = function()
+			return { "edit" }
+		end,
+		desc = "Show or edit PR info",
+	})
+
 	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
 		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
 		vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {
@@ -286,6 +296,12 @@ function M.refresh(opts)
 	end
 	if type(git.clear_pr_list) == "function" then
 		git.clear_pr_list()
+	end
+	if type(git.clear_pr_metadata) == "function" then
+		git.clear_pr_metadata()
+	end
+	if type(git.clear_checks) == "function" then
+		git.clear_checks()
 	end
 	pcall(function()
 		require("pr.drift").invalidate_all()

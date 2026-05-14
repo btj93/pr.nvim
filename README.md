@@ -169,8 +169,27 @@ Editing an existing comment is reached from the `?` menu (the `edit` action has 
 - **Bitbucket Cloud** (`curl`): real REST-backed implementation. The `assigned` filter falls through to `all` because Bitbucket Cloud has no assignee concept; a one-time notification fires when it's picked.
 - **GitLab** (`glab`): `list_prs` and `checkout_pr` are stubs (`vim.notify("not implemented yet for gitlab")`) pending a follow-up implementation. Other features (comments, hunks, etc.) work fully.
 
+## PR info popup
+
+`:PRInfo` opens a floating, markdown-rendered popup with the current branch's PR title, body, state, labels, reviewers, assignees, and CI checks. Inside the popup:
+
+- `e` — switch into edit mode (title and body become writable; `<C-s>` to save, `<Esc><Esc>` or `q` to cancel).
+- `c` — open the CI checks menu; `<CR>` on a check yanks its log URL.
+- `u` — refresh metadata + checks.
+- `q` — close.
+
+Saving an edit performs a remote-change check: if someone else (or you on another machine) edited the PR while you were typing, a confirm prompt offers Overwrite / Refresh / Abort.
+
+`:PRInfo edit` skips view mode and jumps straight into edit mode.
+
+### Provider parity
+
+- **GitHub** (`gh`): full support.
+- **Bitbucket Cloud** / **GitLab**: stubs — `:PRInfo` will notify "get_pr_metadata not implemented yet for <provider>". Real implementations slated for a follow-up plan.
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
 - `:PRList` — open a picker of your open PRs (mine / assigned / review-requested / all) and check one out. See "Picking PRs" above for picker-specific keybindings.
+- `:PRInfo` — show the current branch's PR title, body, state, labels, reviewers, assignees, and CI checks in a floating popup. `:PRInfo edit` opens directly in edit mode.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.
