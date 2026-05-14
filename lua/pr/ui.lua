@@ -127,13 +127,44 @@ local function render_thread(thread)
 		emit(header_line(author), i)
 		meta.header_line = #lines
 
-		local body = vim.fn.split((c.body or ""):gsub("\r", ""), "\n")
+		local body_raw = (c.body or ""):gsub("\r", "")
+		local body = vim.fn.split(body_raw, "\n")
 		if #body == 0 then
 			body = { "" }
 		end
 		meta.body_start = #lines + 1
-		for _, bl in ipairs(body) do
-			emit(bl, i)
+		-- Walk body lines, swapping in a visual box wherever a ```suggestion fence opens.
+		-- `extract_suggestions` operates on the original body so its fence_open_idx /
+		-- fence_close_idx line up with the indices of `body` here.
+		local suggestion = require("pr.suggestion")
+		local sugs = suggestion.extract_suggestions(body_raw)
+		if #sugs == 0 then
+			for _, bl in ipairs(body) do
+				emit(bl, i)
+			end
+		else
+			local sug_by_open = {}
+			for _, s in ipairs(sugs) do
+				sug_by_open[s.fence_open_idx] = s
+			end
+			local bi = 1
+			while bi <= #body do
+				local s = sug_by_open[bi]
+				if s then
+					-- Header rule. BODY_WIDTH = 78; "╔═ suggestion " is 14 cells.
+					local header_prefix = "╔═ suggestion "
+					local header_fill = math.max(3, BODY_WIDTH - vim.fn.strdisplaywidth(header_prefix))
+					emit(header_prefix .. string.rep("═", header_fill), i)
+					for _, sl in ipairs(s.content_lines) do
+						emit("║ + " .. sl, i)
+					end
+					emit("╚" .. string.rep("═", BODY_WIDTH - 1), i)
+					bi = s.fence_close_idx + 1
+				else
+					emit(body[bi], i)
+					bi = bi + 1
+				end
+			end
 		end
 		meta.body_end = #lines
 
@@ -497,8 +528,9 @@ end
 
 ---
 ---@param thread ReviewThread
+---@param relative_path string?  -- path of the file the thread anchors to (when known)
 ---@return NuiLayout
-function M.make_comments_layout(thread)
+function M.make_comments_layout(thread, relative_path)
 	git.get_git_user()
 	-- Capture the source buffer BEFORE any popup mounts steal focus. The <C-r>
 	-- queue-as-review-comment handler needs to derive the relative path from the
@@ -569,12 +601,19 @@ function M.make_comments_layout(thread)
 				vim.notify("Not a git repository.", vim.log.levels.ERROR)
 				return
 			end
-			local buffer_path = vim.api.nvim_buf_is_valid(source_bufnr) and vim.api.nvim_buf_get_name(source_bufnr) or ""
-			if buffer_path == "" then
-				vim.notify("Cannot queue: source buffer has no name", vim.log.levels.ERROR)
-				return
+			-- Prefer the caller-provided relative_path (init.lua's M.popup
+			-- already resolved it). Fall back to deriving from the source
+			-- buffer for completeness in case make_comments_layout is called
+			-- without the optional 2nd argument.
+			local path = relative_path
+			if not path or path == "" then
+				local buffer_path = vim.api.nvim_buf_is_valid(source_bufnr) and vim.api.nvim_buf_get_name(source_bufnr) or ""
+				if buffer_path == "" then
+					vim.notify("Cannot queue: source buffer has no name", vim.log.levels.ERROR)
+					return
+				end
+				path = buffer_path:sub(#git_root + 2)
 			end
-			local relative_path = buffer_path:sub(#git_root + 2)
 			git.start_pending_review(vim.schedule_wrap(function(review_id, err)
 				if not review_id then
 					vim.notify(err or "Could not start review", vim.log.levels.ERROR)
@@ -582,7 +621,7 @@ function M.make_comments_layout(thread)
 				end
 				git.add_review_comment(
 					review_id,
-					relative_path,
+					path,
 					first.start_line or first.end_line,
 					first.end_line,
 					body,
@@ -908,6 +947,13 @@ function M.make_comments_layout(thread)
 		vim.api.nvim_win_set_cursor(comments_popup.winid, { prev_start, 0 })
 	end)
 
+	-- Keys that, when no action can_perform, should fall through to the
+	-- inline-edit on-keypress flow (insert/append/open-line). Without this
+	-- fallback, defining an action on one of these keys (e.g. `a` for
+	-- apply_suggestion) would consume the keypress unconditionally and break
+	-- the default editing affordances on comments the user can edit.
+	local inline_edit_fallback_keys = { a = true, A = true, i = true, I = true, o = true, O = true }
+
 	-- Per-action keymaps, dispatching to the comment under cursor.
 	for k, action in pairs(M.actions) do
 		if action.key then
@@ -917,6 +963,12 @@ function M.make_comments_layout(thread)
 					return
 				end
 				if not action.can_perform(thread, comment) then
+					-- Action can't fire — for the editing keys, fall back to
+					-- the inline-edit-on-keypress behavior so users can still
+					-- edit their own comments with `a`/`i`/`o` etc.
+					if inline_edit_fallback_keys[action.key] then
+						try_start_inline_edit(action.key)()
+					end
 					return
 				end
 				local ctx = {
@@ -925,6 +977,8 @@ function M.make_comments_layout(thread)
 					body_range = rendered.comment_meta[idx],
 					re_render = re_render,
 					refresh_thread = refresh_thread,
+					source_bufnr = source_bufnr,
+					relative_path = relative_path,
 					unmount = function()
 						layout:unmount()
 					end,
@@ -960,16 +1014,19 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	git.get_git_user()
 	local new_comment_popup = M.make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ <C-r> Queue review ] | [ 󰌑 Submit ]")
 
-	for _, mode in ipairs({ "n", "i" }) do
-		new_comment_popup:map(mode, "<M-s>", function()
-			local suggestion = { "```suggestion", unpack(lines) }
-			table.insert(suggestion, "```")
-			vim.notify(vim.inspect(suggestion))
-			vim.api.nvim_buf_set_lines(new_comment_popup.bufnr, 0, -1, false, suggestion)
-			-- TODO: clear if already exists
-			-- TODO: keep existing comment
-		end)
-	end
+	new_comment_popup:map({ "n", "i" }, "<M-s>", function()
+		local current_lines = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, false)
+		local current_text = table.concat(current_lines, "\n")
+		local unwrapped = require("pr.suggestion").unwrap_suggestion(current_text)
+		if unwrapped then
+			-- Currently wrapped — unwrap.
+			vim.api.nvim_buf_set_lines(new_comment_popup.bufnr, 0, -1, false, unwrapped)
+		else
+			-- Not wrapped — wrap.
+			local wrapped = require("pr.suggestion").wrap_as_suggestion(current_lines)
+			vim.api.nvim_buf_set_lines(new_comment_popup.bufnr, 0, -1, false, vim.split(wrapped, "\n", { plain = true }))
+		end
+	end, { noremap = true })
 
 	local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
 
@@ -2079,6 +2136,108 @@ M.actions = {
 			vim.fn.setreg("+", url)
 			vim.fn.setreg('"', url)
 			vim.notify("Yanked: " .. url)
+		end,
+	},
+	apply_suggestion = {
+		mode = "n",
+		key = "a",
+		menu_text = "Apply suggestion",
+		menu_desc = "Replace anchored lines with the suggestion content",
+		popup_hint = "[a] apply suggestion",
+		show_hint = true,
+		can_perform = function(_, comment)
+			if not comment or not comment.body then
+				return false
+			end
+			return #require("pr.suggestion").extract_suggestions(comment.body) > 0
+		end,
+		perform = function(_thread, comment, _, _, ctx)
+			local suggestion = require("pr.suggestion")
+			local list = suggestion.extract_suggestions(comment.body)
+			if #list == 0 then
+				return
+			end
+			-- v1: only the first suggestion in the comment. Multi-suggestion
+			-- handling would require picker UI; punt for now.
+			local sug = list[1]
+			sug.anchor_start_line = comment.start_line
+			sug.anchor_end_line = comment.end_line
+
+			-- Resolve the file path. The popup's owning caller (init.lua's
+			-- M.popup) threads `relative_path` through `make_comments_layout`
+			-- into `ctx`. The visual-mode `:PRComment` flow doesn't open the
+			-- comments popup, so a missing relative_path here is a programmer
+			-- error rather than a user-facing condition.
+			local relative_path = ctx and ctx.relative_path
+			if not relative_path or relative_path == "" then
+				vim.notify("Cannot apply: file path unknown for this thread", vim.log.levels.ERROR)
+				return
+			end
+
+			git.get_git_root(vim.schedule_wrap(function(git_root)
+				if not git_root or git_root == "" then
+					vim.notify("Not a git repository", vim.log.levels.ERROR)
+					return
+				end
+				local abs = git_root .. "/" .. relative_path
+
+				-- Prefer the source buffer the popup was opened from; fall
+				-- back to scanning loaded buffers by absolute path; finally
+				-- open the file ourselves.
+				local target_buf = nil
+				if ctx and ctx.source_bufnr and vim.api.nvim_buf_is_valid(ctx.source_bufnr) then
+					if vim.api.nvim_buf_get_name(ctx.source_bufnr) == abs then
+						target_buf = ctx.source_bufnr
+					end
+				end
+				if not target_buf then
+					for _, b in ipairs(vim.api.nvim_list_bufs()) do
+						if vim.api.nvim_buf_is_loaded(b) and vim.api.nvim_buf_get_name(b) == abs then
+							target_buf = b
+							break
+						end
+					end
+				end
+				if not target_buf then
+					local util = require("pr.util")
+					util.open_pr_file(abs, relative_path, { line = comment.start_line })
+					target_buf = vim.api.nvim_get_current_buf()
+				end
+
+				local drift = require("pr.drift")
+				drift.get_for_buffer(target_buf, git_root, relative_path, function(dm)
+					local ok, err = suggestion.apply(target_buf, sug, dm)
+					if ok then
+						vim.notify("Applied suggestion (" .. #sug.content_lines .. " lines)")
+					else
+						vim.notify("Apply failed: " .. (err or "?"), vim.log.levels.ERROR)
+					end
+				end)
+			end))
+		end,
+	},
+	yank_suggestion = {
+		mode = "n",
+		key = "ya",
+		menu_text = "Yank suggestion",
+		menu_desc = "Copy the suggestion content to the clipboard",
+		popup_hint = "[ya] yank suggestion",
+		show_hint = true,
+		can_perform = function(_, comment)
+			if not comment or not comment.body then
+				return false
+			end
+			return #require("pr.suggestion").extract_suggestions(comment.body) > 0
+		end,
+		perform = function(_thread, comment, _, _)
+			local list = require("pr.suggestion").extract_suggestions(comment.body)
+			if #list == 0 then
+				return
+			end
+			local content = table.concat(list[1].content_lines, "\n")
+			vim.fn.setreg("+", content)
+			vim.fn.setreg('"', content)
+			vim.notify("Yanked suggestion (" .. #list[1].content_lines .. " lines)")
 		end,
 	},
 	help = {

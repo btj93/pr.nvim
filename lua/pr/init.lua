@@ -150,7 +150,7 @@ function M.popup(relative_path, line)
 			for _, thread in ipairs(comments) do
 				local _, first_comment = next(thread.comments)
 				if first_comment and first_comment.start_line <= line and first_comment.end_line >= line then
-					local layout = ui.make_comments_layout(thread)
+					local layout = ui.make_comments_layout(thread, relative_path)
 					layout:mount()
 					break
 				end
@@ -215,6 +215,13 @@ function M.setup(opts)
 	vim.api.nvim_create_user_command("PRReviewDiscard", function()
 		require("pr.review")._discard()
 	end, { desc = "Discard pending review" })
+
+	vim.api.nvim_create_user_command("PRSuggest", function()
+		require("pr.suggestion").comment_with_suggestion()
+	end, {
+		range = true,
+		desc = "Open a new-comment popup wrapping the visual selection as a suggestion",
+	})
 
 	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
 		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
@@ -327,6 +334,7 @@ end
 M.cycle_comments_in_buffer = comment.cycle_comments_in_buffer
 M.cycle_hunks_in_buffer = hunk.cycle_hunks_in_buffer
 M.comment = comment.comment
+M.comment_with_suggestion = require("pr.suggestion").comment_with_suggestion
 M.attach_comment = comment.attach
 M.attach_hunk = hunk.attach
 M.toggle_hunks = hunk.toggle

@@ -136,6 +136,14 @@ return {
         require("pr").cycle_comments_in_buffer("backward")
       end,
     },
+    {
+      "<leader>cs",
+      function()
+        require("pr.suggestion").comment_with_suggestion()
+      end,
+      mode = "v",
+      { desc = "Suggest change for visual selection" },
+    },
   },
 }
 ```
@@ -147,6 +155,8 @@ Once you open a thread (e.g. via `<leader>gp`), these keymaps are available on t
 - `c` — write a reply. In visual mode, quote-reply the selected text (prepopulates the reply buffer with the selection quoted).
 - `e` — open the emoji / reactions menu (hidden on providers without reaction support, e.g. Bitbucket).
 - `r` — resolve / unresolve the thread (depending on its state and your permissions).
+- `a` — apply the suggestion in the focused comment to the underlying buffer (only when the comment contains a ` ```suggestion ` block; drift-aware). See "Suggested edits" below.
+- `ya` — yank the suggestion content to the system clipboard (only when the comment contains a ` ```suggestion ` block).
 - `<M-d>` — delete the comment (if you authored it).
 - `yl` — yank the thread's web URL to the clipboard (works on github / gitlab / bitbucket).
 - `q` — close the comments popup.
@@ -211,6 +221,21 @@ When authoring a new comment from visual mode (the popup opened by `M.comment` /
 - **GitHub** (`gh`): full support. Pending reviews live server-side via the GitHub draft-review API, so they survive Neovim restarts and match the web UI's behavior. Re-opening `:PRReview` picks up any pending review you may have created via the web UI.
 - **GitLab** / **Bitbucket Cloud**: pending comments are stored locally in `stdpath('data')/pr.nvim/pending_review.json` (keyed by provider/owner/repo/pr_number) so you can queue and inspect them. `:PRReview` submit will currently emit a warning that end-to-end submission is not yet wired through (`glab` and Bitbucket REST equivalents are planned for a follow-up).
 
+## Suggested edits
+
+GitHub-flavored ` ```suggestion ` blocks render as a visual box inside the thread popup, with each suggested line prefixed by `║ +`. Two new actions are available when the focused comment contains a suggestion:
+
+- `a` — apply the suggestion to the underlying buffer. Uses the same drift mapping as inline rendering, so a suggestion authored against an older commit still lands on the right buffer rows.
+- `ya` — yank the suggestion content to the `+` and `"` registers.
+
+Both actions are gated by `can_perform`, so they only bind when the focused comment actually contains a suggestion block. If the focused comment has no suggestion, `a` and `ya` fall through to their default Neovim meaning.
+
+### Authoring a suggestion
+
+From visual mode, select the lines you want to suggest changes for and run `:PRSuggest` (or wire it to a keybinding like `<leader>cs` — see the `keys = { ... }` example above). A new-comment popup opens pre-filled with a ` ```suggestion ` block containing your selection. Edit the lines inside the fence to the desired replacement, and add prose outside the fence to explain.
+
+Inside the new-comment popup, `<M-s>` toggles wrap / unwrap: if the buffer content is currently a complete suggestion fence, it strips the fence; otherwise it wraps the whole buffer content in a fence. The title bar exposes this as `<M-s> Toggle suggestion` alongside `<C-r> Queue review`.
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
@@ -218,4 +243,5 @@ When authoring a new comment from visual mode (the popup opened by `M.comment` /
 - `:PRInfo` — show the current branch's PR title, body, state, labels, reviewers, assignees, and CI checks in a floating popup. `:PRInfo edit` opens directly in edit mode.
 - `:PRReview` — open the review-submission layout for the current PR (queues pending comments + lets you submit as approve / request-changes / comment).
 - `:PRReviewDiscard` — discard the current pending review without opening the layout.
+- `:PRSuggest` — open a new-comment popup with the visual selection wrapped as a ` ```suggestion ` block. Use from visual mode to author a suggested change for the lines under selection. See "Suggested edits" above.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.
