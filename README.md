@@ -54,6 +54,16 @@ return {
     -- Suppress inline rendering of resolved threads. Defaults to true (no
     -- change from previous behavior).
     show_resolved_inline = true,
+    diagnostics = {
+      -- Surface unresolved PR threads as vim.diagnostic entries (so plugins like
+      -- trouble.nvim, lsp_lines, and :Telescope diagnostics pick them up).
+      enabled = true,
+      severity = vim.diagnostic.severity.HINT, -- default: HINT so PR threads don't
+      -- override real LSP/lint errors.
+      include_resolved = false,
+      include_outdated = false,
+      source = "PR", -- shown in source column of diagnostic plugins
+    },
     -- Optional palette overrides. pr.nvim re-applies these on every
     -- ColorScheme event so a colorscheme switch no longer drops the colors.
     -- Note: definitions use `default = true`, so colorschemes that
@@ -236,6 +246,33 @@ From visual mode, select the lines you want to suggest changes for and run `:PRS
 
 Inside the new-comment popup, `<M-s>` toggles wrap / unwrap: if the buffer content is currently a complete suggestion fence, it strips the fence; otherwise it wraps the whole buffer content in a fence. The title bar exposes this as `<M-s> Toggle suggestion` alongside `<C-r> Queue review`.
 
+## Diagnostics + quickfix
+
+pr.nvim publishes unresolved PR threads as `vim.diagnostic` entries in a dedicated namespace (`pr_threads`). Anything that reads diagnostics — trouble.nvim, lsp_lines, the built-in `:Telescope diagnostics`, lualine's diagnostics component, etc. — automatically picks up PR threads alongside LSP errors and linter warnings.
+
+By default the severity is `HINT` so threads don't overshadow real LSP/lint errors. Tune via:
+
+```lua
+diagnostics = {
+  enabled = true,
+  severity = vim.diagnostic.severity.WARN, -- promote to WARN if you want them louder
+  include_resolved = false, -- set true to show resolved threads too
+  include_outdated = true, -- show outdated threads (caveat: line numbers may be stale)
+  source = "PR",
+}
+```
+
+Set `diagnostics.enabled = false` to opt out entirely (inline signs continue to work).
+
+`:PRQuickfix` dumps all unresolved threads across the PR into the quickfix list — useful when you want to walk every thread without opening files manually. Filter modes:
+
+- `:PRQuickfix` (default) — unresolved threads.
+- `:PRQuickfix outdated` — only outdated threads.
+- `:PRQuickfix file` — threads on the current file only.
+- `:PRQuickfix all` — every thread regardless of state.
+
+Combine with `:cdo` / `:cfdo` for batch operations across the PR.
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
@@ -244,4 +281,5 @@ Inside the new-comment popup, `<M-s>` toggles wrap / unwrap: if the buffer conte
 - `:PRReview` — open the review-submission layout for the current PR (queues pending comments + lets you submit as approve / request-changes / comment).
 - `:PRReviewDiscard` — discard the current pending review without opening the layout.
 - `:PRSuggest` — open a new-comment popup with the visual selection wrapped as a ` ```suggestion ` block. Use from visual mode to author a suggested change for the lines under selection. See "Suggested edits" above.
+- `:PRQuickfix [unresolved|outdated|all|file]` — populate the quickfix list with PR threads (`unresolved` by default). Then `:cnext` / `:cprev` to navigate, `:cdo` / `:cfdo` for batch ops. See "Diagnostics + quickfix" below.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.

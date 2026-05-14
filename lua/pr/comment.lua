@@ -111,6 +111,11 @@ function M.draw(buf)
 				end
 			end
 
+			local ok_diag, diagnostics = pcall(require, "pr.diagnostics")
+			if ok_diag then
+				diagnostics.publish(buf, comments, drift_map)
+			end
+
 			if config.opts.debug then
 				if comments_placed > 0 then
 					vim.api.nvim_echo({ { comments_placed .. " PR comment threads shown.", "InfoMsg" } }, true, {})
@@ -238,6 +243,9 @@ function M.stop()
 	M.enabled = false
 	M.wins = {}
 	clear_decorations()
+	pcall(function()
+		require("pr.diagnostics").clear_all()
+	end)
 	drift.invalidate_all()
 	pcall(vim.api.nvim_del_augroup_by_name, "PRComment")
 	pcall(vim.api.nvim_del_augroup_by_name, "PRCommentBufWrite")

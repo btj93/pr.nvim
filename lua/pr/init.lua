@@ -223,6 +223,20 @@ function M.setup(opts)
 		desc = "Open a new-comment popup wrapping the visual selection as a suggestion",
 	})
 
+	vim.api.nvim_create_user_command("PRQuickfix", function(arg)
+		local kind = arg.args
+		if kind == "" then
+			kind = "unresolved"
+		end
+		require("pr.quickfix").dump({ kind = kind })
+	end, {
+		nargs = "?",
+		complete = function()
+			return { "unresolved", "outdated", "all", "file" }
+		end,
+		desc = "Dump PR threads to quickfix",
+	})
+
 	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
 		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
 		vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {

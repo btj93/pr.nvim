@@ -62,6 +62,13 @@ M.opts = {
 	--- suppress all inline rendering of resolved threads; they remain accessible
 	--- through the popup and the picker filters.
 	show_resolved_inline = true,
+	diagnostics = {
+		enabled = true,
+		severity = vim.diagnostic.severity.HINT,
+		include_resolved = false,
+		include_outdated = false,
+		source = "PR",
+	},
 	auto_refresh = {
 		on_branch_change = true,
 		on_head_change = true,
