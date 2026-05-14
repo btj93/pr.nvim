@@ -258,4 +258,84 @@ function M.format_hunks(entry)
 	return string.format("%s %-80s %s:%s", icon or " ", entry.value.file, entry.value.hunk_start, entry.value.hunk_end)
 end
 
+---
+---@return nil
+function M.pick_prs()
+	local ok_t, _ = pcall(require, "telescope")
+	if not ok_t then
+		vim.notify("telescope.nvim not installed", vim.log.levels.WARN)
+		return
+	end
+	local pickers = require("telescope.pickers")
+	local finders = require("telescope.finders")
+	local sorters = require("telescope.sorters")
+	local actions = require("telescope.actions")
+	local action_state = require("telescope.actions.state")
+	local filter = require("pr.pickers.filter")
+
+	git.list_prs(
+		filter.state.pr_list_filter,
+		vim.schedule_wrap(function(prs)
+			if not prs or #prs == 0 then
+				vim.notify("No PRs to list (filter: " .. filter.state.pr_list_filter .. ")")
+				return
+			end
+
+			local items = {}
+			for _, pr in ipairs(prs) do
+				local display = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
+				table.insert(items, {
+					value = {
+						number = pr.number,
+						title = pr.title or "",
+						author = pr.author or "",
+						state = pr.state or "",
+						branch = pr.branch or "",
+						url = pr.url or "",
+					},
+					display = display,
+					ordinal = tostring(pr.number) .. " " .. (pr.title or "") .. " " .. (pr.author or ""),
+				})
+			end
+
+			pickers
+				.new({}, {
+					prompt_title = filter.pr_list_label() .. "PRs",
+					finder = finders.new_table({
+						results = items,
+						entry_maker = function(entry)
+							return entry
+						end,
+					}),
+					sorter = sorters.get_generic_fuzzy_sorter(),
+					attach_mappings = function(prompt_bufnr, map)
+						actions.select_default:replace(function()
+							local selection = action_state.get_selected_entry()
+							actions.close(prompt_bufnr)
+							if not selection or not selection.value then
+								return
+							end
+							local ok_pr, pr_list = pcall(require, "pr.pr_list")
+							if not ok_pr or type(pr_list.checkout) ~= "function" then
+								vim.notify("pr_list.checkout not available yet")
+								return
+							end
+							pr_list.checkout(selection.value.number)
+						end)
+
+						local cycle = function()
+							filter.cycle_pr_filter()
+							actions.close(prompt_bufnr)
+							M.pick_prs()
+						end
+						map("i", "<Tab>", cycle)
+						map("n", "<Tab>", cycle)
+						return true
+					end,
+				})
+				:find()
+		end)
+	)
+end
+
 return M

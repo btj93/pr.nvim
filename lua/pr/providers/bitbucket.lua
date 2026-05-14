@@ -24,6 +24,8 @@ M.base_sha = ""
 M.comments = {}
 ---@type Hunks
 M.hunks = {}
+---@type table<string, PRSummary[]>
+M.pr_list = {}
 
 ---@type ReactionPaletteEntry[]
 M.reaction_palette = {}
@@ -716,6 +718,170 @@ function M.thread_url(_thread, comment)
 	)
 end
 
+--- Pure transformation from a parsed `/pullrequests?state=OPEN` body into the
+--- canonical PRSummary[] shape. Exposed for unit testing.
+---@param raw table  -- decoded body of /pullrequests?state=OPEN
+---@param git_user string
+---@param git_user_uuid string
+---@return PRSummary[]
+function M._normalize_prs(raw, git_user, git_user_uuid)
+	local out = {}
+	for _, p in ipairs((raw or {}).values or {}) do
+		local author = (p.author and p.author.nickname) or (p.author and p.author.display_name) or ""
+		local author_uuid = p.author and p.author.uuid or ""
+		local state_lower = string.lower(p.state or "OPEN")
+		local state
+		if state_lower == "open" then
+			state = "open"
+		elseif state_lower == "merged" then
+			state = "merged"
+		elseif state_lower == "declined" or state_lower == "superseded" then
+			state = "closed"
+		else
+			state = state_lower
+		end
+
+		local branch = (p.source and p.source.branch and p.source.branch.name) or ""
+
+		local reviewers = {}
+		local is_rr = false
+		for _, r in ipairs(p.reviewers or {}) do
+			local nick = r.nickname or r.display_name or ""
+			table.insert(reviewers, nick)
+			if (r.uuid and r.uuid == git_user_uuid) or (git_user ~= "" and nick == git_user) then
+				is_rr = true
+			end
+		end
+
+		table.insert(out, {
+			number = p.id,
+			title = p.title or "",
+			author = author,
+			state = state,
+			branch = branch,
+			url = (p.links and p.links.html and p.links.html.href) or "",
+			updated_at = p.updated_on or p.created_on or "",
+			unread_count = nil,
+			reviewers = reviewers,
+			is_mine = (git_user_uuid ~= "" and author_uuid == git_user_uuid) or (git_user ~= "" and author == git_user),
+			is_assignee = false, -- Bitbucket Cloud has no assignee concept; always false.
+			is_review_requested = is_rr,
+		})
+	end
+	return out
+end
+
+---@param filter string
+---@param callback fun(prs: PRSummary[])
+function M.list_prs(filter, callback)
+	callback = callback or function(_) end
+	if M.pr_list[filter] then
+		callback(M.pr_list[filter])
+		return
+	end
+
+	M.get_git_user(vim.schedule_wrap(function(git_user)
+		M.get_repo_info(vim.schedule_wrap(function(workspace, repo)
+			if not workspace or not repo then
+				callback({})
+				return
+			end
+			local user_uuid = M.git_user_uuid or ""
+			local q_parts = {}
+			if filter == "mine" and user_uuid ~= "" then
+				table.insert(q_parts, 'author.uuid="' .. user_uuid .. '"')
+			elseif filter == "review-requested" and user_uuid ~= "" then
+				table.insert(q_parts, 'reviewers.uuid="' .. user_uuid .. '"')
+			elseif filter == "assigned" then
+				vim.notify("Bitbucket Cloud has no assignee filter; falling back to 'all'")
+			end
+			-- Always restrict to OPEN PRs; for "all" we only constrain by state.
+			local query
+			if #q_parts > 0 then
+				query = "?state=OPEN&pagelen=50&q=" .. M._url_encode(table.concat(q_parts, " AND "))
+			else
+				query = "?state=OPEN&pagelen=50"
+			end
+
+			local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests" .. query
+			run_curl(
+				"GET",
+				path,
+				nil,
+				vim.schedule_wrap(function(ok, data)
+					if not ok or not data then
+						callback({})
+						return
+					end
+					local prs = M._normalize_prs(data, git_user or "", user_uuid)
+					M.pr_list[filter] = prs
+					callback(prs)
+				end)
+			)
+		end))
+	end))
+end
+
+---@param pr_number integer
+---@param callback fun(success: boolean, err: string?)
+function M.checkout_pr(pr_number, callback)
+	callback = callback or function(_, _) end
+
+	M.get_repo_info(vim.schedule_wrap(function(workspace, repo)
+		if not workspace or not repo then
+			callback(false, "no repo info")
+			return
+		end
+		local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. tostring(pr_number)
+		run_curl(
+			"GET",
+			path,
+			nil,
+			vim.schedule_wrap(function(ok, data)
+				if not ok or not data or not data.source or not data.source.branch or not data.source.branch.name then
+					callback(false, "could not fetch PR metadata")
+					return
+				end
+				local branch = data.source.branch.name
+				local git_root = (M.git_root ~= nil and M.git_root ~= "") and M.git_root or "."
+
+				-- git fetch origin <branch>
+				Job:new({
+					command = "git",
+					args = { "-C", git_root, "fetch", "origin", branch },
+					on_exit = vim.schedule_wrap(function(_, fetch_code)
+						if fetch_code ~= 0 then
+							local err = "git fetch origin " .. branch .. " failed"
+							vim.notify(err, vim.log.levels.ERROR)
+							callback(false, err)
+							return
+						end
+						-- git checkout <branch>
+						Job:new({
+							command = "git",
+							args = { "-C", git_root, "checkout", branch },
+							on_exit = vim.schedule_wrap(function(_, ck_code)
+								if ck_code ~= 0 then
+									local err = "git checkout " .. branch .. " failed"
+									vim.notify(err, vim.log.levels.ERROR)
+									callback(false, err)
+									return
+								end
+								vim.cmd("checktime")
+								callback(true)
+							end),
+						}):start()
+					end),
+				}):start()
+			end)
+		)
+	end))
+end
+
+function M.clear_pr_list()
+	M.pr_list = {}
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -725,6 +891,7 @@ function M.clear()
 	M.git_user = ""
 	M.git_user_uuid = ""
 	M.base_sha = ""
+	M.pr_list = {}
 end
 
 function M.clear_comments()

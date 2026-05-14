@@ -284,4 +284,83 @@ function M.format_hunks(item, _)
 	return ret
 end
 
+---
+---@return nil
+function M.pick_prs()
+	if not Snacks then
+		vim.notify("snacks.nvim not installed; configure a different picker or install snacks", vim.log.levels.WARN)
+		return
+	end
+	local filter = require("pr.pickers.filter")
+
+	git.list_prs(
+		filter.state.pr_list_filter,
+		vim.schedule_wrap(function(prs)
+			if not prs or #prs == 0 then
+				vim.notify("No PRs to list (filter: " .. filter.state.pr_list_filter .. ")")
+				return
+			end
+
+			return Snacks.picker({
+				title = filter.pr_list_label() .. "PRs",
+				keys = {
+					["<Tab>"] = {
+						function(picker)
+							filter.cycle_pr_filter()
+							picker:close()
+							M.pick_prs()
+						end,
+						desc = "Cycle PR filter",
+					},
+				},
+				---@return snacks.picker.finder.Item[]
+				finder = function()
+					local items = {}
+					for _, pr in ipairs(prs) do
+						table.insert(items, {
+							text = string.format("#%d %s %s", pr.number, pr.title or "", pr.author or ""),
+							data = {
+								number = pr.number,
+								title = pr.title or "",
+								author = pr.author or "",
+								state = pr.state or "",
+								branch = pr.branch or "",
+								url = pr.url or "",
+							},
+						})
+					end
+					return items
+				end,
+				format = M.format_prs,
+				confirm = function(picker, item)
+					picker:close()
+					if not item then
+						return
+					end
+					local ok, pr_list = pcall(require, "pr.pr_list")
+					if not ok or type(pr_list.checkout) ~= "function" then
+						vim.notify("pr_list.checkout not available yet")
+						return
+					end
+					pr_list.checkout(item.data.number)
+				end,
+			})
+		end)
+	)
+end
+
+function M.format_prs(item, _)
+	local ret = {}
+	local a = Snacks.picker.util.align
+	local data = item.data
+	ret[#ret + 1] = { a("#" .. tostring(data.number), 7), "Number" }
+	ret[#ret + 1] = { " " }
+	ret[#ret + 1] = { a(data.state, 8), "Identifier" }
+	ret[#ret + 1] = { " " }
+	ret[#ret + 1] = { Snacks.picker.util.truncate(data.title, 60), "Title" }
+	ret[#ret + 1] = { "  " }
+	ret[#ret + 1] = { "@" .. data.author, "@variable.builtin" }
+	return ret
+end
+
 return M

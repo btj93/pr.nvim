@@ -25,6 +25,8 @@ M.diff_refs = nil
 M.comments = {}
 ---@type Hunks
 M.hunks = {}
+---@type table<string, PRSummary[]>
+M.pr_list = {}
 
 -- Canonical reaction keys are uppercase ASCII names (GitHub GraphQL enum values
 -- plus a curated set of GitLab extras). The rest of the plugin only speaks
@@ -912,6 +914,28 @@ function M.thread_url(_thread, comment)
 	return string.format("https://gitlab.com/%s/%s/-/merge_requests/%d#note_%s", M.repo_info.owner, M.repo_info.repo, M.pr_number, tostring(comment.database_id))
 end
 
+---@param _filter string
+---@param callback fun(prs: PRSummary[])
+function M.list_prs(_filter, callback)
+	vim.notify("list_prs not implemented yet for gitlab")
+	if callback then
+		callback({})
+	end
+end
+
+---@param _pr_number integer
+---@param callback fun(success: boolean, err: string?)
+function M.checkout_pr(_pr_number, callback)
+	vim.notify("checkout_pr not implemented yet for gitlab")
+	if callback then
+		callback(false, "not implemented")
+	end
+end
+
+function M.clear_pr_list()
+	M.pr_list = {}
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -921,6 +945,7 @@ function M.clear()
 	M.git_user = ""
 	M.diff_refs = nil
 	M.base_sha = ""
+	M.pr_list = {}
 end
 
 function M.clear_comments()

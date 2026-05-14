@@ -194,6 +194,10 @@ function M.setup(opts)
 		M.refresh()
 	end, { desc = "Refresh PR comments and hunks" })
 
+	vim.api.nvim_create_user_command("PRList", function()
+		require("pr.picker").pick_prs()
+	end, { desc = "List PRs and switch into one" })
+
 	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
 		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
 		vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {
@@ -280,6 +284,9 @@ function M.refresh(opts)
 	if type(git.clear_pr_number) == "function" then
 		git.clear_pr_number()
 	end
+	if type(git.clear_pr_list) == "function" then
+		git.clear_pr_list()
+	end
 	pcall(function()
 		require("pr.drift").invalidate_all()
 	end)
@@ -297,5 +304,6 @@ M.attach_comment = comment.attach
 M.attach_hunk = hunk.attach
 M.toggle_hunks = hunk.toggle
 M.toggle_comments = comment.toggle
+M._check_branch_and_refresh = check_branch_and_refresh
 
 return M

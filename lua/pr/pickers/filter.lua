@@ -3,15 +3,19 @@
 
 local M = {}
 
+local PR_FILTERS = { "mine", "assigned", "review-requested", "all" }
+
 M.state = {
 	show_resolved = true,
 	show_outdated = true,
+	pr_list_filter = "mine",
 }
 
 --- Reset filter state to defaults. Called by M.refresh paths.
 function M.reset()
 	M.state.show_resolved = true
 	M.state.show_outdated = true
+	M.state.pr_list_filter = "mine"
 end
 
 --- Toggle the visibility of a thread category.
@@ -67,6 +71,26 @@ function M.label()
 		return ""
 	end
 	return "[" .. table.concat(parts, "+") .. "] "
+end
+
+--- Cycle to the next PR-list filter (mine → assigned → review-requested → all → mine).
+function M.cycle_pr_filter()
+	local current = M.state.pr_list_filter
+	for i, v in ipairs(PR_FILTERS) do
+		if v == current then
+			M.state.pr_list_filter = PR_FILTERS[(i % #PR_FILTERS) + 1]
+			return
+		end
+	end
+	-- Unknown value: reset to the default.
+	M.state.pr_list_filter = PR_FILTERS[1]
+end
+
+--- Human label describing the current PR-list filter. Used by pickers to prefix
+--- the prompt (e.g. "[mine] PRs").
+---@return string
+function M.pr_list_label()
+	return "[" .. M.state.pr_list_filter .. "] "
 end
 
 return M

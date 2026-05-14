@@ -19,6 +19,9 @@ M.comments = {}
 ---@type Hunks
 M.hunks = {}
 
+---@type table<string, PRSummary[]>
+M.pr_list = {}
+
 ---@type ReactionPaletteEntry[]
 M.reaction_palette = {
 	{ content = "THUMBS_UP", glyph = "👍" },
@@ -139,6 +142,51 @@ function M._normalize_comments(data)
 	end
 
 	return comments, thread_count, unsolved_count
+end
+
+--- Pure transformation from a decoded `gh pr list --json ...` array into the
+--- canonical PRSummary[] shape. Exposed for unit testing.
+---@param raw table[]   -- decoded JSON array from `gh pr list --json ...`
+---@return PRSummary[]
+function M._normalize_prs(raw)
+	local out = {}
+	for _, p in ipairs(raw or {}) do
+		local author = p.author and p.author.login or ""
+		local state = p.isDraft and "draft" or string.lower(p.state or "open")
+		local reviewers = {}
+		for _, rr in ipairs(p.reviewRequests or {}) do
+			if rr.login then
+				table.insert(reviewers, rr.login)
+			end
+		end
+		local is_assignee = false
+		for _, a in ipairs(p.assignees or {}) do
+			if a.login == M.git_user then
+				is_assignee = true
+			end
+		end
+		local is_rr = false
+		for _, r in ipairs(reviewers) do
+			if r == M.git_user then
+				is_rr = true
+			end
+		end
+		table.insert(out, {
+			number = p.number,
+			title = p.title,
+			author = author,
+			state = state,
+			branch = p.headRefName,
+			url = p.url,
+			updated_at = p.updatedAt,
+			unread_count = nil,
+			reviewers = reviewers,
+			is_mine = author == M.git_user,
+			is_assignee = is_assignee,
+			is_review_requested = is_rr,
+		})
+	end
+	return out
 end
 
 ---
@@ -944,6 +992,95 @@ function M.thread_url(_thread, comment)
 	return string.format("https://github.com/%s/%s/pull/%d#discussion_r%s", M.repo_info.owner, M.repo_info.repo, M.pr_number, tostring(comment.database_id))
 end
 
+--- List PRs filtered by relationship to the viewer. Caches by filter so repeat
+--- picker invocations within the same session don't re-spawn `gh`.
+---@param filter string  "mine"|"assigned"|"review-requested"|"all"
+---@param callback fun(prs: PRSummary[])
+function M.list_prs(filter, callback)
+	callback = callback or function(_) end
+	if M.pr_list[filter] then
+		callback(M.pr_list[filter])
+		return
+	end
+
+	local args = {
+		"pr",
+		"list",
+		"--json",
+		"number,title,author,state,headRefName,url,updatedAt,isDraft,reviewRequests,assignees",
+		"--limit",
+		"100",
+	}
+	if filter == "mine" then
+		table.insert(args, "--author")
+		table.insert(args, "@me")
+	elseif filter == "assigned" then
+		table.insert(args, "--assignee")
+		table.insert(args, "@me")
+	elseif filter == "review-requested" then
+		table.insert(args, "--search")
+		table.insert(args, "review-requested:@me state:open")
+	end
+	-- For "all" or unknown filter, no extra args -- gh pr list defaults to open PRs.
+
+	Job:new({
+		command = "gh",
+		args = args,
+		on_exit = vim.schedule_wrap(function(j, code)
+			if code ~= 0 then
+				vim.notify("Error running gh pr list. Is a gh cli installed?")
+				callback({})
+				return
+			end
+			local out = j:result() or {}
+			local body = table.concat(out, "\n")
+			if body == "" then
+				M.pr_list[filter] = {}
+				callback({})
+				return
+			end
+			local ok, raw = pcall(vim.fn.json_decode, body)
+			if not ok or type(raw) ~= "table" then
+				vim.notify("Error parsing gh pr list output")
+				callback({})
+				return
+			end
+			local prs = M._normalize_prs(raw)
+			M.pr_list[filter] = prs
+			callback(prs)
+		end),
+	}):start()
+end
+
+---@param pr_number integer
+---@param callback fun(success: boolean, err: string?)
+function M.checkout_pr(pr_number, callback)
+	callback = callback or function(_, _) end
+	local stderr_lines = {}
+	Job:new({
+		command = "gh",
+		args = { "pr", "checkout", tostring(pr_number) },
+		on_stderr = function(_, line)
+			if line and line ~= "" then
+				table.insert(stderr_lines, line)
+			end
+		end,
+		on_exit = vim.schedule_wrap(function(_, code)
+			if code ~= 0 then
+				local err = table.concat(stderr_lines, "\n")
+				if err == "" then
+					err = "gh pr checkout exited " .. tostring(code)
+				end
+				vim.notify(err, vim.log.levels.ERROR)
+				callback(false, err)
+				return
+			end
+			vim.cmd("checktime")
+			callback(true)
+		end),
+	}):start()
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -952,6 +1089,7 @@ function M.clear()
 	M.git_root = ""
 	M.git_user = ""
 	M.base_sha = ""
+	M.pr_list = {}
 end
 
 function M.clear_comments()
@@ -964,6 +1102,10 @@ end
 
 function M.clear_pr_number()
 	M.pr_number = 0
+end
+
+function M.clear_pr_list()
+	M.pr_list = {}
 end
 
 return M

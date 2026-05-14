@@ -106,6 +106,13 @@ return {
       { desc = "Pick PR comments" },
     },
     {
+      "<leader>fp",
+      function()
+        require("pr.picker").pick_prs()
+      end,
+      { desc = "Pick PR" },
+    },
+    {
       "]ph",
       function()
         require("pr").cycle_hunks_in_buffer("forward")
@@ -147,12 +154,23 @@ Once you open a thread (e.g. via `<leader>gp`), these keymaps are available on t
 
 Editing an existing comment is reached from the `?` menu (the `edit` action has no direct key). It opens an in-place edit mode on the comment's body; press `<CR>` to commit the edit or `<Esc><Esc>` to cancel.
 
+## Picking PRs
+
+`:PRList` (or `require("pr.picker").pick_prs()`) opens the configured picker over your open PRs. The picker title shows the active filter; cycle filters in place:
+
+- **snacks / telescope** — `<Tab>` cycles `mine → assigned → review-requested → all`. Telescope binds `<Tab>` in both insert and normal mode.
+- **fzf-lua** — `<C-t>` cycles (fzf-lua reserves `<Tab>` for multi-select).
+
+`<CR>` checks out the chosen PR via `gh pr checkout` (github) or the equivalent provider call. Open buffers automatically reload on the branch switch, and PR comments/hunks refresh.
+
+### Provider parity
+
+- **GitHub** (`gh`): full support — all four filters work.
+- **Bitbucket Cloud** (`curl`): real REST-backed implementation. The `assigned` filter falls through to `all` because Bitbucket Cloud has no assignee concept; a one-time notification fires when it's picked.
+- **GitLab** (`glab`): `list_prs` and `checkout_pr` are stubs (`vim.notify("not implemented yet for gitlab")`) pending a follow-up implementation. Other features (comments, hunks, etc.) work fully.
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
+- `:PRList` — open a picker of your open PRs (mine / assigned / review-requested / all) and check one out. See "Picking PRs" above for picker-specific keybindings.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.
-
-## Coming Soon
-
-- [ ] PR explorer
-- [ ] Switch to a PR branch

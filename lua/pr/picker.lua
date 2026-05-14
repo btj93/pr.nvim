@@ -20,4 +20,9 @@ function M.pick_comments(picker, ...)
 	picker.pick_comments(...)
 end
 
+function M.pick_prs(picker, ...)
+	picker = M.get_picker(picker)
+	picker.pick_prs(...)
+end
+
 return M

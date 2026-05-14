@@ -149,6 +149,62 @@ function M.outdated(comments)
 	return c
 end
 
+---
+---@return nil
+function M.pick_prs()
+	local ok, fzf = pcall(require, "fzf-lua")
+	if not ok then
+		vim.notify("fzf-lua not installed", vim.log.levels.WARN)
+		return
+	end
+	local filter = require("pr.pickers.filter")
+
+	git.list_prs(
+		filter.state.pr_list_filter,
+		vim.schedule_wrap(function(prs)
+			if not prs or #prs == 0 then
+				vim.notify("No PRs to list (filter: " .. filter.state.pr_list_filter .. ")")
+				return
+			end
+
+			-- Encode each PR as a line keyed back to the PR record so we can
+			-- recover the number from fzf's selection.
+			local entries = {}
+			local by_line = {}
+			for _, pr in ipairs(prs) do
+				local line = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
+				table.insert(entries, line)
+				by_line[line] = pr
+			end
+
+			fzf.fzf_exec(entries, {
+				prompt = filter.pr_list_label() .. "PRs> ",
+				actions = {
+					["default"] = function(selected)
+						if not selected or not selected[1] then
+							return
+						end
+						local pr = by_line[selected[1]]
+						if not pr then
+							return
+						end
+						local ok_pr, pr_list = pcall(require, "pr.pr_list")
+						if not ok_pr or type(pr_list.checkout) ~= "function" then
+							vim.notify("pr_list.checkout not available yet")
+							return
+						end
+						pr_list.checkout(pr.number)
+					end,
+					["ctrl-t"] = function()
+						filter.cycle_pr_filter()
+						M.pick_prs()
+					end,
+				},
+			})
+		end)
+	)
+end
+
 function M.pick_hunks()
 	local fzf = require("fzf-lua")
 

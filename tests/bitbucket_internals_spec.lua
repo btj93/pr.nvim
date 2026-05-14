@@ -69,6 +69,12 @@ describe("bitbucket._url_encode", function()
 	it("preserves unreserved chars", function()
 		assert.equals("Foo-Bar_baz.123~", bb._url_encode("Foo-Bar_baz.123~"))
 	end)
+
+	it("percent-encodes ampersand (list_prs query separator collision)", function()
+		-- regression: list_prs previously used vim.fn.escape which produced \&
+		-- instead of %26, causing Bitbucket to mis-parse the q= parameter.
+		assert.equals("a%26b", bb._url_encode("a&b"))
+	end)
 end)
 
 describe("bitbucket._parse_remote_url", function()

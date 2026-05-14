@@ -18,6 +18,7 @@
 --   M.git_root         string                  working tree root (empty when unset)
 --   M.git_user         string                  authenticated user login (empty when unset)
 --   M.base_sha         string                  cached PR base-branch HEAD commit sha (empty when unset)
+--   M.pr_list          table<string, PRSummary[]>  cached PR summaries keyed by filter
 --   M.reaction_palette ReactionPaletteEntry[]  addable reactions; empty array hides the emoji action
 --
 -- Functions (each callback fires on the main thread):
@@ -38,7 +39,9 @@
 --   unresolve_thread(thread_id, callback?)                         -> callback(success)
 --   delete_comment(comment_id, callback?)                          -> callback(success)
 --   thread_url(thread, comment)                                    -> string?  (synchronous URL formatter)
---   clear() / clear_comments() / clear_hunks() / clear_pr_number()
+--   list_prs(filter, callback)                                     -> callback(prs: PRSummary[])
+--   checkout_pr(pr_number, callback)                               -> callback(success: boolean, err: string?)
+--   clear() / clear_comments() / clear_hunks() / clear_pr_number() / clear_pr_list()
 --
 -- thread.id, comment.database_id, and reactor.database_id are opaque to
 -- consumers — the provider receives back exactly what it emitted, so each
@@ -105,5 +108,19 @@
 ---@class ReactionPaletteEntry
 ---@field content string Canonical content key, used everywhere across the plugin
 ---@field glyph string Display glyph
+
+---@class PRSummary
+---@field number integer
+---@field title string
+---@field author string
+---@field state "open"|"draft"|"closed"|"merged"
+---@field branch string
+---@field url string
+---@field updated_at string
+---@field unread_count integer?
+---@field reviewers string[]
+---@field is_mine boolean
+---@field is_assignee boolean
+---@field is_review_requested boolean
 
 return {}
