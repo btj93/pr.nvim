@@ -20,13 +20,6 @@ local config = require("pr.config")
 
 local M = {}
 
----@type table<integer, Draft>
----@class Draft
----@field body string
----@field updated_at string
--- TODO: validate with version number
-M.drafts = {}
-
 function M._glyph_for(content)
 	if git and git.reaction_palette then
 		for _, entry in ipairs(git.reaction_palette) do
@@ -365,11 +358,11 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 
 	-- If a persisted draft exists and matches this comment's updated_at, restore it.
 	-- Otherwise drop any stale draft (the upstream comment has moved on).
-	local persisted = M.drafts[comment.database_id]
+	local drafts = require("pr.drafts")
+	local persisted = drafts.get_edit(comment.database_id)
 	if persisted and persisted.updated_at ~= comment.updated_at then
-		M.drafts[comment.database_id] = nil
+		drafts.delete_edit(comment.database_id)
 		persisted = nil
-		M.save_drafts()
 	end
 
 	local body
@@ -399,17 +392,16 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 				return
 			end
 
-			local draft = M.drafts[comment.database_id] or {}
+			local draft = drafts.get_edit(comment.database_id) or {}
 			if draft.updated_at and draft.updated_at ~= comment.updated_at then
 				vim.notify("TODO: implement")
 				return
 			end
 
-			M.drafts[comment.database_id] = {
+			drafts.save_edit(comment.database_id, {
 				body = new_body,
 				updated_at = comment.updated_at,
-			}
-			M.save_drafts()
+			})
 		end)
 	end
 
@@ -547,6 +539,26 @@ function M.make_comments_layout(thread, relative_path)
 
 	local new_reply_popup = make_new_reply_popup()
 
+	-- Reply drafts: keyed by thread.id. Persisted on every buffer change, deleted
+	-- on successful submit (<CR> reply or <C-r> queue-as-review path).
+	local drafts = require("pr.drafts")
+	local reply_key = tostring(thread.id)
+
+	local existing_reply = drafts.get_reply(reply_key)
+	if existing_reply and existing_reply.body and existing_reply.body ~= "" then
+		vim.api.nvim_buf_set_lines(new_reply_popup.bufnr, 0, -1, false, vim.split(existing_reply.body, "\n", { plain = true }))
+	end
+
+	vim.api.nvim_buf_attach(new_reply_popup.bufnr, false, {
+		on_lines = function()
+			if not vim.api.nvim_buf_is_valid(new_reply_popup.bufnr) then
+				return true
+			end
+			local body = table.concat(vim.api.nvim_buf_get_lines(new_reply_popup.bufnr, 0, -1, false), "\n")
+			drafts.save_reply(reply_key, { body = body, updated_at = tostring(os.time()) })
+		end,
+	})
+
 	new_reply_popup:map("n", "<CR>", function()
 		local body = vim.api.nvim_buf_get_lines(new_reply_popup.bufnr, 0, -1, true)
 		local _, first_comment = next(thread.comments)
@@ -563,6 +575,7 @@ function M.make_comments_layout(thread, relative_path)
 					return
 				end
 				vim.notify("Reply submitted")
+				drafts.delete_reply(reply_key)
 				-- Clear the composer buffer and refresh so the new reply appears.
 				if vim.api.nvim_buf_is_valid(new_reply_popup.bufnr) then
 					vim.api.nvim_buf_set_lines(new_reply_popup.bufnr, 0, -1, false, {})
@@ -628,6 +641,7 @@ function M.make_comments_layout(thread, relative_path)
 					vim.schedule_wrap(function(ok)
 						if ok then
 							vim.notify("Queued as review comment")
+							drafts.delete_reply(reply_key)
 							if layout then
 								layout:unmount()
 							end
@@ -1014,6 +1028,33 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	git.get_git_user()
 	local new_comment_popup = M.make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ <C-r> Queue review ] | [ 󰌑 Submit ]")
 
+	-- New-comment drafts: keyed by the path + anchor range, persisted on every
+	-- buffer change, deleted on successful submit (<CR> or <C-r> queue path).
+	local drafts = require("pr.drafts")
+	local new_draft_key = string.format("%s:%d:%d", relative_path or "", start_line, end_line)
+
+	-- Pre-fill from a persisted draft if it exists. Only overwrite if the popup
+	-- doesn't already have content the caller wants to preserve.
+	local existing_new = drafts.get_new(new_draft_key)
+	if existing_new and existing_new.body and existing_new.body ~= "" then
+		local cur = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, false)
+		local cur_text = table.concat(cur, "\n")
+		if cur_text == "" then
+			vim.api.nvim_buf_set_lines(new_comment_popup.bufnr, 0, -1, false, vim.split(existing_new.body, "\n", { plain = true }))
+		end
+	end
+
+	-- Persist on every buffer change. Detach when the buffer becomes invalid.
+	vim.api.nvim_buf_attach(new_comment_popup.bufnr, false, {
+		on_lines = function()
+			if not vim.api.nvim_buf_is_valid(new_comment_popup.bufnr) then
+				return true
+			end
+			local body = table.concat(vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, false), "\n")
+			drafts.save_new(new_draft_key, { body = body, updated_at = tostring(os.time()) })
+		end,
+	})
+
 	new_comment_popup:map({ "n", "i" }, "<M-s>", function()
 		local current_lines = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, false)
 		local current_text = table.concat(current_lines, "\n")
@@ -1089,6 +1130,7 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 				vim.schedule_wrap(function(success)
 					if success then
 						vim.notify("Comment submitted")
+						drafts.delete_new(new_draft_key)
 						layout:unmount()
 					end
 				end)
@@ -1141,6 +1183,7 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 					vim.schedule_wrap(function(ok)
 						if ok then
 							vim.notify("Queued as review comment")
+							drafts.delete_new(new_draft_key)
 							layout:unmount()
 						else
 							vim.notify("Failed to queue review comment", vim.log.levels.ERROR)
@@ -1241,8 +1284,16 @@ function M.make_pr_edit_layout(metadata, callbacks)
 	vim.api.nvim_buf_set_lines(body_popup.bufnr, 0, -1, false, vim.split(metadata.body or "", "\n", { plain = true }))
 
 	local function submit()
-		local title = table.concat(vim.api.nvim_buf_get_lines(title_popup.bufnr, 0, -1, false), " ")
+		local title = vim.trim(table.concat(vim.api.nvim_buf_get_lines(title_popup.bufnr, 0, -1, false), " "))
+		if title == "" then
+			vim.notify("Title is empty; submit aborted. Use [Esc][Esc] or q to cancel.", vim.log.levels.ERROR)
+			return
+		end
 		local body = table.concat(vim.api.nvim_buf_get_lines(body_popup.bufnr, 0, -1, false), "\n")
+		if vim.trim(body) == "" then
+			vim.notify("Body is empty; submit aborted. Use [Esc][Esc] or q to cancel.", vim.log.levels.ERROR)
+			return
+		end
 		callbacks.on_submit({ title = title, body = body })
 		layout:unmount()
 	end
@@ -1250,6 +1301,10 @@ function M.make_pr_edit_layout(metadata, callbacks)
 	local function cancel()
 		layout:unmount()
 	end
+
+	-- Prevent newlines in the title popup; `gh pr edit --title` expects a single
+	-- line, and silently flattening multi-line input is a footgun.
+	title_popup:map("i", "<CR>", "<Nop>", { noremap = true })
 
 	for _, p in ipairs({ title_popup, body_popup }) do
 		p:map({ "n", "i" }, "<C-s>", submit, { noremap = true })
@@ -1579,63 +1634,8 @@ function M.make_help_menu(thread, comment, new_reply_popup, popup_winid, ctx)
 	return menu
 end
 
-local function drafts_path()
-	return vim.fn.stdpath("data") .. "/pr.nvim/drafts.json"
-end
-
---- Persist M.drafts to disk so in-progress edits survive a Neovim restart.
-function M.save_drafts()
-	local path = drafts_path()
-	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-
-	local serializable = {}
-	for id, draft in pairs(M.drafts) do
-		-- JSON object keys must be strings; integer ids round-trip via tostring/tonumber.
-		serializable[tostring(id)] = draft
-	end
-
-	local ok, encoded = pcall(vim.json.encode, serializable)
-	if not ok then
-		return
-	end
-
-	local f = io.open(path, "w")
-	if not f then
-		return
-	end
-	f:write(encoded)
-	f:close()
-end
-
---- Load persisted drafts into M.drafts. Existing in-memory entries take precedence.
-function M.load_drafts()
-	local path = drafts_path()
-	local f = io.open(path, "r")
-	if not f then
-		return
-	end
-	local content = f:read("*a")
-	f:close()
-
-	if not content or content == "" then
-		return
-	end
-
-	local ok, decoded = pcall(vim.json.decode, content)
-	if not ok or type(decoded) ~= "table" then
-		return
-	end
-
-	for k, v in pairs(decoded) do
-		local id = tonumber(k)
-		if id and type(v) == "table" and M.drafts[id] == nil then
-			M.drafts[id] = v
-		end
-	end
-end
-
 function M.setup()
-	M.load_drafts()
+	-- Drafts are now persisted lazily by the `pr.drafts` module; no upfront load needed.
 end
 
 local function replace_chars(pos, str, r)
@@ -1652,6 +1652,34 @@ end
 ---@field show_hint boolean
 ---@field can_perform? fun(thread: ReviewThread, comment: CommentInfo): boolean
 ---@field perform? fun(thread: ReviewThread, comment: CommentInfo, new_reply_popup: NuiPopup, popup_winid: number)
+
+---Pure: decide what to do when a pre-commit refetch returns `fresh`.
+---Returns one of "proceed" | "overwrite" | "refresh" | "abort".
+---
+---- `proceed` — no refetch data, or no remote drift; send the user's body as-is.
+---- `overwrite` — remote changed, but the user picked Overwrite at the prompt.
+---- `refresh`  — remote changed and the user picked Refresh; caller should
+---  rewrite the edit buffer with the fresh body and keep the user in edit mode.
+---- `abort`    — remote changed and the user picked Abort (or no choice); no-op.
+---@param fresh { updated_at: string }?
+---@param snapshot_updated_at string?
+---@param confirm_choice integer  -- as returned by vim.fn.confirm
+---@return "proceed"|"overwrite"|"refresh"|"abort"
+function M._conflict_decision(fresh, snapshot_updated_at, confirm_choice)
+	if not fresh then
+		return "proceed"
+	end
+	if fresh.updated_at == snapshot_updated_at then
+		return "proceed"
+	end
+	if confirm_choice == 1 then
+		return "overwrite"
+	end
+	if confirm_choice == 2 then
+		return "refresh"
+	end
+	return "abort"
+end
 
 --- Set up inline-edit mode on the comments buffer for the given comment, WITHOUT
 --- moving the cursor or entering insert mode. The caller is responsible for
@@ -1701,6 +1729,21 @@ function M._start_inline_edit(thread, comment, ctx)
 	-- Snapshot the body to compare against on InsertLeave.
 	local original_body = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, body_end, false)
 
+	-- Snapshot the comment's updated_at so we can detect remote edits between
+	-- the moment the user entered edit mode and the moment they commit.
+	local snapshot_updated_at = comment.updated_at
+
+	-- Snapshot the lines outside the editable body so we can splice them back
+	-- on an out-of-range edit. Using `:undo` was unsafe here — in insert mode
+	-- vim batches keystrokes into one undo block, and `nvim_buf_set_lines`
+	-- from the popup's initial render is its own undo step, so a single
+	-- mid-insert `:undo` could step all the way back to an empty buffer.
+	-- Declared up-front so the closures below (commit/do_edit) can refresh
+	-- `after_snapshot` after a conflict-driven "Refresh" rewrite.
+	local before_snapshot = vim.api.nvim_buf_get_lines(bufnr, 0, body_start - 1, false)
+	local after_snapshot = vim.api.nvim_buf_get_lines(bufnr, body_end, -1, false)
+	local restoring = false
+
 	local function teardown()
 		detached = true
 		if vim.api.nvim_buf_is_valid(bufnr) then
@@ -1719,22 +1762,76 @@ function M._start_inline_edit(thread, comment, ctx)
 		end
 	end
 
-	local function commit()
-		local body_lines = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
-		local body_text = table.concat(body_lines, "\n")
+	local function do_edit(body_text)
 		git.edit_comment(
 			comment.database_id,
 			body_text,
 			vim.schedule_wrap(function(success)
 				if success then
 					vim.notify("Comment saved")
-					M.drafts[comment.database_id] = nil
-					M.save_drafts()
+					require("pr.drafts").delete_edit(comment.database_id)
 				end
 				teardown()
 				if ctx.re_render then
 					ctx.re_render()
 				end
+			end)
+		)
+	end
+
+	local function commit()
+		local body_lines = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
+		local body_text = table.concat(body_lines, "\n")
+
+		local conflict_check_enabled = config.opts.conflict_detection and config.opts.conflict_detection.enabled
+		if not conflict_check_enabled or type(git.refetch_comment) ~= "function" then
+			do_edit(body_text)
+			return
+		end
+
+		git.refetch_comment(
+			comment.database_id,
+			vim.schedule_wrap(function(fresh)
+				-- Prompt the user only when there's an actual mismatch — otherwise
+				-- the choice is unused. We still call `_conflict_decision` after
+				-- the prompt so the pure helper remains the single source of truth.
+				local choice = 0
+				if fresh and fresh.updated_at ~= snapshot_updated_at then
+					choice = vim.fn.confirm(
+						"Comment changed remotely since edit started.",
+						"&Overwrite\n&Refresh and re-edit\n&Abort",
+						3 -- default to Abort
+					)
+				end
+				local decision = M._conflict_decision(fresh, snapshot_updated_at, choice)
+				if decision == "proceed" or decision == "overwrite" then
+					do_edit(body_text)
+				elseif decision == "refresh" then
+					-- Replace the buffer's edit range with the fresh body, update
+					-- the snapshots, and keep the user in edit mode. Re-entering
+					-- insert mode is the caller's job; we don't yank focus around.
+					if not vim.api.nvim_buf_is_valid(bufnr) then
+						return
+					end
+					local fresh_lines = vim.split(fresh.body or "", "\n", { plain = true })
+					vim.bo[bufnr].modifiable = true
+					vim.api.nvim_buf_set_lines(bufnr, current_body_start - 1, current_body_end, false, fresh_lines)
+					current_body_end = current_body_start + #fresh_lines - 1
+					-- Refresh `after_snapshot` so future out-of-range splices use the
+					-- new body's length. `before_snapshot` is unchanged because the
+					-- splice happens strictly inside the body range.
+					after_snapshot = vim.api.nvim_buf_get_lines(bufnr, current_body_end, -1, false)
+					-- Update both the on-disk comment mirror and the snapshot so a
+					-- subsequent commit attempt compares against the fresh state.
+					comment.body = fresh.body or ""
+					comment.updated_at = fresh.updated_at
+					snapshot_updated_at = fresh.updated_at
+					original_body = fresh_lines
+					place_dim()
+					vim.notify("Comment refreshed from remote. Continue editing, then leave insert mode to save.")
+				end
+				-- "abort": no-op. User stays in normal mode with the editable body
+				-- still in place; pressing `i` re-enters their changes.
 			end)
 		)
 	end
@@ -1749,15 +1846,6 @@ function M._start_inline_edit(thread, comment, ctx)
 	vim.bo[bufnr].modifiable = true
 	vim.b[bufnr].pr_edit_comment_id = comment.database_id
 	place_dim()
-
-	-- Snapshot the lines outside the editable body so we can splice them back
-	-- on an out-of-range edit. Using `:undo` was unsafe here — in insert mode
-	-- vim batches keystrokes into one undo block, and `nvim_buf_set_lines`
-	-- from the popup's initial render is its own undo step, so a single
-	-- mid-insert `:undo` could step all the way back to an empty buffer.
-	local before_snapshot = vim.api.nvim_buf_get_lines(bufnr, 0, body_start - 1, false)
-	local after_snapshot = vim.api.nvim_buf_get_lines(bufnr, body_end, -1, false)
-	local restoring = false
 
 	vim.api.nvim_buf_attach(bufnr, false, {
 		on_lines = function(_, _, _, firstline, lastline, new_lastline)
@@ -2063,11 +2151,12 @@ M.actions = {
 		popup_hint = "([S]ave edited)",
 		show_hint = false,
 		can_perform = function(_, comment)
-			local draft = M.drafts[comment.database_id] or {}
+			local draft = require("pr.drafts").get_edit(comment.database_id) or {}
 			return draft.body and draft.updated_at
 		end,
 		perform = function(_, comment, _, _)
-			local draft = M.drafts[comment.database_id]
+			local drafts = require("pr.drafts")
+			local draft = drafts.get_edit(comment.database_id)
 			if not draft or not draft.body then
 				return
 			end
@@ -2078,8 +2167,7 @@ M.actions = {
 				vim.schedule_wrap(function(success)
 					if success then
 						vim.notify("Comment saved")
-						M.drafts[comment.database_id] = nil
-						M.save_drafts()
+						drafts.delete_edit(comment.database_id)
 					end
 				end)
 			)

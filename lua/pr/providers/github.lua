@@ -915,6 +915,41 @@ function M.edit_comment(comment_id, body, callback)
 	end))
 end
 
+---Refetch a single review comment's freshest state from GitHub.
+---Returns the database_id, body, and updated_at — enough to detect remote edits.
+---@param comment_id integer|string
+---@param callback fun(comment: { database_id: integer, body: string, updated_at: string }?)
+function M.refetch_comment(comment_id, callback)
+	callback = callback or function(_) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(nil)
+		end
+		Job:new({
+			command = "gh",
+			args = { "api", string.format("/repos/%s/%s/pulls/comments/%s", owner, repo, tostring(comment_id)) },
+			on_exit = vim.schedule_wrap(function(j, code)
+				if code ~= 0 then
+					return callback(nil)
+				end
+				local body = table.concat(j:result() or {}, "\n")
+				if body == "" then
+					return callback(nil)
+				end
+				local ok, raw = pcall(vim.fn.json_decode, body)
+				if not ok or type(raw) ~= "table" or not raw.id then
+					return callback(nil)
+				end
+				callback({
+					database_id = raw.id,
+					body = raw.body or "",
+					updated_at = raw.updated_at or "",
+				})
+			end),
+		}):start()
+	end))
+end
+
 --
 ---@param thread_id string
 ---@param callback function?(success: boolean)

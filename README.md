@@ -64,6 +64,19 @@ return {
       include_outdated = false,
       source = "PR", -- shown in source column of diagnostic plugins
     },
+    drafts = {
+      -- Persist in-progress comment bodies (edits, new comments, and replies)
+      -- so a Neovim crash doesn't lose your work. Drafts live in
+      -- stdpath('data') .. "/pr.nvim/drafts.json" (atomic tmp+rename writes).
+      enabled = true,
+      -- path = nil  -- override default location if needed
+    },
+    conflict_detection = {
+      -- Before committing an in-place edit, re-fetch the comment's freshest
+      -- updated_at and prompt if it changed remotely (Overwrite / Refresh /
+      -- Abort, default Abort). Set false to skip the refetch.
+      enabled = true,
+    },
     -- Optional palette overrides. pr.nvim re-applies these on every
     -- ColorScheme event so a colorscheme switch no longer drops the colors.
     -- Note: definitions use `default = true`, so colorschemes that
@@ -272,6 +285,45 @@ Set `diagnostics.enabled = false` to opt out entirely (inline signs continue to 
 - `:PRQuickfix all` — every thread regardless of state.
 
 Combine with `:cdo` / `:cfdo` for batch operations across the PR.
+
+## Drafts + conflict-aware editing
+
+### Drafts
+
+In-progress comment bodies persist to `stdpath('data') .. "/pr.nvim/drafts.json"` so a Neovim crash, restart, or switch to another buffer doesn't lose your work. Drafts cover three popup kinds:
+
+- **Edit drafts** — keyed by the comment's `database_id`. Auto-dropped when the comment changes remotely (the `updated_at` mismatch signals the upstream content moved on).
+- **New-comment drafts** — keyed by `path:start:end` of the visual selection that opened the popup. Persist until you submit (`<CR>`) or queue (`<C-r>`) the comment.
+- **Reply drafts** — keyed by thread id. Same persistence semantics as new-comment drafts.
+
+On-disk shape is JSON v2; if you have a pre-v2 file (the old flat `comment_id -> draft` map), it migrates automatically on first load.
+
+Disable entirely via `drafts.enabled = false`.
+
+### Conflict-aware edit
+
+When you commit an in-place edit of an existing comment, pr.nvim re-fetches the comment's current `updated_at` and compares to the snapshot taken when you started editing. If they differ (someone else — or you, on another machine — edited the comment while you were typing), you get a prompt:
+
+```
+Comment changed remotely since edit started.
+[O]verwrite  [R]efresh and re-edit  [A]bort (default)
+```
+
+- **Overwrite** sends your body anyway.
+- **Refresh** replaces the buffer's edit content with the freshest body so you can re-apply your changes.
+- **Abort** does nothing; the edit context stays alive — press `i` to keep typing.
+
+The refetch costs one extra `gh api` call per submit; disable via `conflict_detection.enabled = false` if you prefer to skip the check. Providers that don't implement `refetch_comment` (currently gitlab/bitbucket) silently skip the check.
+
+### Validation on PR-info edits
+
+`:PRInfo edit` rejects:
+
+- Empty title (gh would silently no-op).
+- Empty body (same).
+- Newlines in the title (insert-mode `<CR>` is bound to `<Nop>` so you can't insert them).
+
+Both empty-string cases produce a clear error notification; the edit popup stays open so you can fix and retry.
 
 ## Commands
 

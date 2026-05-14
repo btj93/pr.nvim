@@ -664,6 +664,16 @@ function M.edit_comment(comment_id, body, callback)
 	end)
 end
 
+---Stub: silent no-op. Returns nil so callers (conflict-aware edit) skip the
+---remote-change check and proceed with the edit.
+---@param _comment_id integer|string
+---@param callback fun(comment: any?)
+function M.refetch_comment(_comment_id, callback)
+	if callback then
+		callback(nil)
+	end
+end
+
 ---
 ---@param thread_id string Root comment id (stringified) — what we stored as `thread.id`.
 ---@param callback? fun(success: boolean)

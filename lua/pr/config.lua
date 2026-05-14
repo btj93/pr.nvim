@@ -78,6 +78,17 @@ M.opts = {
 		--- gh API. Set to 0 to disable, or pick something tighter while actively reviewing.
 		interval = 300,
 	},
+	drafts = {
+		enabled = true,
+		-- nil = use the default path (stdpath('data') .. "/pr.nvim/drafts.json")
+		path = nil,
+	},
+	conflict_detection = {
+		-- Re-fetch the comment's freshest state before each in-place edit commit
+		-- and prompt the user when it changed remotely. Set to false to skip the
+		-- refetch entirely (faster commits; risk of silent overwrite).
+		enabled = true,
+	},
 }
 
 function M.setup(opts)

@@ -38,6 +38,7 @@
 --   reply(comment_id, body, callback?)                             -> callback(success)
 --   comment(relative_path, start_line, end_line, body, callback?)  -> callback(success)
 --   edit_comment(comment_id, body, callback?)                      -> callback(success)
+--   refetch_comment(comment_id, callback)                          -> callback(comment: { database_id, body, updated_at }?)
 --   resolve_thread(thread_id, callback?)                           -> callback(success)
 --   unresolve_thread(thread_id, callback?)                         -> callback(success)
 --   delete_comment(comment_id, callback?)                          -> callback(success)

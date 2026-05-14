@@ -7,6 +7,13 @@ local function open_edit(metadata)
 	local snapshot = metadata.updated_at
 	local layout = ui.make_pr_edit_layout(metadata, {
 		on_submit = function(fields)
+			-- Defense-in-depth: the ui layer already rejects empty title/body,
+			-- but guard here too so a misbehaving caller can't push an empty
+			-- payload through `gh pr edit` (which silently no-ops on `--body ""`).
+			if not fields or vim.trim(fields.title or "") == "" or vim.trim(fields.body or "") == "" then
+				vim.notify("PR title and body must not be empty", vim.log.levels.ERROR)
+				return
+			end
 			-- Conflict-aware: re-fetch latest metadata and compare updated_at.
 			if type(git.clear_pr_metadata) == "function" then
 				git.clear_pr_metadata()
