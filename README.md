@@ -48,6 +48,25 @@ return {
   opts = {
     provider = "github", -- "github" | "gitlab" | "bitbucket"
     picker = "snacks", -- "snacks" | "telescope" | "fzf"
+    -- Suppress inline rendering of outdated review threads (still accessible
+    -- through the popup and picker filters). Defaults to false.
+    show_outdated_inline = false,
+    -- Suppress inline rendering of resolved threads. Defaults to true (no
+    -- change from previous behavior).
+    show_resolved_inline = true,
+    -- Optional palette overrides. pr.nvim re-applies these on every
+    -- ColorScheme event so a colorscheme switch no longer drops the colors.
+    -- Note: definitions use `default = true`, so colorschemes that
+    -- explicitly define these group names (e.g. `PRDiffAdd`) win over our
+    -- defaults — pick whichever you prefer.
+    -- colors = {
+    --   diff_add_bg = "#0d3a0d",
+    --   diff_change_bg = "#2a3a57",
+    --   diff_delete_bg = "#893f45",
+    --   sign_fg = "LightBlue",
+    --   unresolved_bg = "#997570",
+    --   resolved_bg = "#82A67D",
+    -- },
   },
   event = "VeryLazy",
   keys = {
@@ -114,9 +133,24 @@ return {
 }
 ```
 
+## Inside a comments popup
+
+Once you open a thread (e.g. via `<leader>gp`), these keymaps are available on the focused comment:
+
+- `c` — write a reply. In visual mode, quote-reply the selected text (prepopulates the reply buffer with the selection quoted).
+- `e` — open the emoji / reactions menu (hidden on providers without reaction support, e.g. Bitbucket).
+- `r` — resolve / unresolve the thread (depending on its state and your permissions).
+- `<M-d>` — delete the comment (if you authored it).
+- `yl` — yank the thread's web URL to the clipboard (works on github / gitlab / bitbucket).
+- `q` — close the comments popup.
+- `?` — open the keymap help menu showing every available action, including ones with no direct binding (like `edit`).
+
+Editing an existing comment is reached from the `?` menu (the `edit` action has no direct key). It opens an in-place edit mode on the comment's body; press `<CR>` to commit the edit or `<Esc><Esc>` to cancel.
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
+- `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.
 
 ## Coming Soon
 

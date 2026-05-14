@@ -29,6 +29,22 @@ M.opts = {
 		hl_emoji = "PREmojiLine",
 		comment_sep = "PRCommentSeparator",
 	},
+	colors = {
+		diff_add_bg = "#40531b",
+		diff_change_bg = "#2a3a57",
+		diff_delete_bg = "#893f45",
+		sign_fg = "LightBlue",
+		hl_comment_bg = "LightBlue",
+		unresolved_bg = "#997570",
+		resolved_bg = "#82A67D",
+		emoji_bg = "#4493f8",
+		emoji_fg = "white",
+		popup_fg = "Yellow",
+		separator_fg = "Grey",
+		edit_dim_fg = "#5c6370",
+		outdated_fg = "#5c6370",
+		sign_comment_fg = "Grey",
+	},
 	run_on_start = {
 		comments = true,
 		hunks = false,
@@ -40,6 +56,12 @@ M.opts = {
 	--- current buffer. Outdated threads are still surfaced via the popup
 	--- (which marks them) and via picker filters.
 	show_outdated_inline = false,
+	--- Show resolved threads inline (signs + virtual text/lines).
+	--- Defaults to true because users typically want the visual distinction
+	--- (background colored differently) for resolved threads. Set to false to
+	--- suppress all inline rendering of resolved threads; they remain accessible
+	--- through the popup and the picker filters.
+	show_resolved_inline = true,
 	auto_refresh = {
 		on_branch_change = true,
 		on_head_change = true,

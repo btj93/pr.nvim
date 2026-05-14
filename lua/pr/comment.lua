@@ -93,6 +93,9 @@ function M.draw(buf)
 				if thread.is_outdated and not config.opts.show_outdated_inline then
 					first_comment = nil
 				end
+				if thread.is_resolved and not config.opts.show_resolved_inline then
+					first_comment = nil
+				end
 				if first_comment then
 					local start_line = first_comment.start_line
 					local end_line = first_comment.end_line

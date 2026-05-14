@@ -1160,17 +1160,6 @@ function M.load_drafts()
 end
 
 function M.setup()
-	vim.api.nvim_set_hl(0, config.opts.highlights.hl_emoji, { bg = "#4493f8", fg = "white" })
-	vim.api.nvim_set_hl(0, config.opts.highlights.popup_hl, { fg = "Yellow" })
-	vim.api.nvim_set_hl(0, config.opts.highlights.comment_sep, { underline = true, fg = "Grey" })
-	-- Used by edit-in-place to fade out non-editable lines. `default = true` so
-	-- a user's colorscheme can override it freely.
-	vim.api.nvim_set_hl(0, "PRCommentEditDim", { fg = "#5c6370", default = true })
-	-- Used as the Normal-link for the unified comments popup when the thread
-	-- is outdated. Renders the whole conversation in a faded foreground so the
-	-- staleness is visually obvious.
-	vim.api.nvim_set_hl(0, "PRCommentOutdated", { fg = "#5c6370", default = true })
-
 	M.load_drafts()
 end
 
@@ -1651,6 +1640,27 @@ M.actions = {
 					)
 				end
 			end)
+		end,
+	},
+	yank_url = {
+		mode = "n",
+		key = "yl",
+		menu_text = "Yank thread URL",
+		menu_desc = "Copy a permalink to this comment to the clipboard",
+		popup_hint = "[yl] yank URL",
+		show_hint = true,
+		can_perform = function(_, comment)
+			return comment ~= nil and type(git.thread_url) == "function"
+		end,
+		perform = function(thread, comment, _, _)
+			local url = git.thread_url(thread, comment)
+			if not url or url == "" then
+				vim.notify("Permalink unavailable for this thread")
+				return
+			end
+			vim.fn.setreg("+", url)
+			vim.fn.setreg('"', url)
+			vim.notify("Yanked: " .. url)
 		end,
 	},
 	help = {

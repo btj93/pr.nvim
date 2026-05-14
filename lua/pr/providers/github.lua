@@ -928,6 +928,22 @@ end
 -- Exposed for unit testing only; do not rely on this from plugin consumers.
 M._parse_diff_hunks = util.parse_diff_hunks
 
+---@param _thread ReviewThread
+---@param comment CommentInfo
+---@return string?
+function M.thread_url(_thread, comment)
+	if not M.repo_info or not M.repo_info.owner or not M.repo_info.repo then
+		return nil
+	end
+	if not M.pr_number or M.pr_number == 0 then
+		return nil
+	end
+	if not comment or not comment.database_id then
+		return nil
+	end
+	return string.format("https://github.com/%s/%s/pull/%d#discussion_r%s", M.repo_info.owner, M.repo_info.repo, M.pr_number, tostring(comment.database_id))
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}

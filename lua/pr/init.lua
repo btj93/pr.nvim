@@ -178,18 +178,13 @@ function M.setup(opts)
 		config.opts.highlights.sign_comment_multi_line_end,
 		{ text = config.opts.multi_line_sign.end_line, texthl = config.opts.highlights.sign_hl }
 	)
-	-- vim.api.nvim_set_hl(0, "DiffAdd", { fg = "Green" })
-	-- vim.api.nvim_set_hl(0, "DiffDelete", { fg = "Red" })
-	vim.api.nvim_set_hl(0, config.opts.highlights.sign_hl, { fg = "LightBlue" })
-	vim.api.nvim_set_hl(0, "PRDiffAdd", { bg = "#40531b" })
-	vim.api.nvim_set_hl(0, "PRDiffChange", { bg = "#2a3a57" })
-	vim.api.nvim_set_hl(0, "PRDiffDelete", { bg = "#893f45" })
-	vim.api.nvim_set_hl(0, config.opts.highlights.sign_comment, { fg = "Grey", italic = true })
-	vim.api.nvim_set_hl(0, config.opts.highlights.hl_comment, { bg = "LightBlue" })
-	-- reddish grey
-	vim.api.nvim_set_hl(0, config.opts.highlights.unresolved_text, { bg = "#997570", italic = true })
-	-- greenish grey
-	vim.api.nvim_set_hl(0, config.opts.highlights.resolved_text, { bg = "#82A67D", italic = true })
+	require("pr.highlights").apply()
+	vim.api.nvim_create_autocmd("ColorScheme", {
+		group = vim.api.nvim_create_augroup("PRColorScheme", { clear = true }),
+		callback = function()
+			require("pr.highlights").apply()
+		end,
+	})
 
 	ui.setup()
 	comment.setup()

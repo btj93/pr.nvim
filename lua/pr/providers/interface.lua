@@ -37,6 +37,7 @@
 --   resolve_thread(thread_id, callback?)                           -> callback(success)
 --   unresolve_thread(thread_id, callback?)                         -> callback(success)
 --   delete_comment(comment_id, callback?)                          -> callback(success)
+--   thread_url(thread, comment)                                    -> string?  (synchronous URL formatter)
 --   clear() / clear_comments() / clear_hunks() / clear_pr_number()
 --
 -- thread.id, comment.database_id, and reactor.database_id are opaque to
