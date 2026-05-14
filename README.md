@@ -187,9 +187,35 @@ Saving an edit performs a remote-change check: if someone else (or you on anothe
 - **GitHub** (`gh`): full support.
 - **Bitbucket Cloud** / **GitLab**: stubs — `:PRInfo` will notify "get_pr_metadata not implemented yet for <provider>". Real implementations slated for a follow-up plan.
 
+## Reviewing a PR
+
+`:PRReview` opens a two-popup layout: the **pending comments** queued under your current draft review, and a **review body** editor below.
+
+Inside the layout (works from either popup):
+
+- `a` — submit as **APPROVE** with the body.
+- `r` — submit as **REQUEST_CHANGES**.
+- `c` — submit as **COMMENT**.
+- `d` — discard the pending review (with confirm prompt).
+- `q` or `<Esc><Esc>` — close without submitting (pending comments are retained).
+
+### Queuing a comment as part of a review
+
+When authoring a new comment from visual mode (the popup opened by `M.comment` / your visual-mode keybind), the title bar shows `<M-s> Toggle suggestion` and `<C-r> Queue review`:
+
+- `<CR>` (existing) submits immediately as a free-standing comment.
+- `<C-r>` (new) — adds the comment to your draft review without submitting. Run `:PRReview` later to see all queued comments and submit the whole review at once.
+
+### Provider parity
+
+- **GitHub** (`gh`): full support. Pending reviews live server-side via the GitHub draft-review API, so they survive Neovim restarts and match the web UI's behavior. Re-opening `:PRReview` picks up any pending review you may have created via the web UI.
+- **GitLab** / **Bitbucket Cloud**: pending comments are stored locally in `stdpath('data')/pr.nvim/pending_review.json` (keyed by provider/owner/repo/pr_number) so you can queue and inspect them. `:PRReview` submit will currently emit a warning that end-to-end submission is not yet wired through (`glab` and Bitbucket REST equivalents are planned for a follow-up).
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
 - `:PRList` — open a picker of your open PRs (mine / assigned / review-requested / all) and check one out. See "Picking PRs" above for picker-specific keybindings.
 - `:PRInfo` — show the current branch's PR title, body, state, labels, reviewers, assignees, and CI checks in a floating popup. `:PRInfo edit` opens directly in edit mode.
+- `:PRReview` — open the review-submission layout for the current PR (queues pending comments + lets you submit as approve / request-changes / comment).
+- `:PRReviewDiscard` — discard the current pending review without opening the layout.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.

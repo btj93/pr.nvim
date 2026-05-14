@@ -210,6 +210,24 @@ function M._render_pr_info(metadata, checks)
 	return lines
 end
 
+---Pure: produce one line per pending comment for the review-layout pending list.
+---@param pending PendingComment[]|nil
+---@return string[]
+function M._render_pending_list(pending)
+	if not pending or #pending == 0 then
+		return { "  (no pending comments)" }
+	end
+	local lines = {}
+	for _, c in ipairs(pending) do
+		local snippet = (c.body or ""):gsub("\r\n", " "):gsub("\n", " ")
+		if #snippet > 60 then
+			snippet = snippet:sub(1, 60) .. "…"
+		end
+		table.insert(lines, string.format('  · %s:%d "%s"', c.path or "?", c.end_line or 0, snippet))
+	end
+	return lines
+end
+
 --- Compute the bottom-border-style hint string for one comment, mirroring
 --- `get_popup_hints` but as a single pre-formatted string suitable for virt_text.
 ---@param thread ReviewThread
@@ -482,6 +500,10 @@ end
 ---@return NuiLayout
 function M.make_comments_layout(thread)
 	git.get_git_user()
+	-- Capture the source buffer BEFORE any popup mounts steal focus. The <C-r>
+	-- queue-as-review-comment handler needs to derive the relative path from the
+	-- buffer the user was viewing, since ReviewThread doesn't carry a path field.
+	local source_bufnr = vim.api.nvim_get_current_buf()
 	-- Forward declarations so closures created before these are assigned can still
 	-- capture them. `refresh_thread` is built after the layout exists (since it
 	-- needs to unmount on a deleted thread); `layout` itself is assigned further
@@ -519,6 +541,69 @@ function M.make_comments_layout(thread)
 			end)
 		)
 	end)
+
+	-- <C-r>: queue the reply body as a review comment anchored to the first
+	-- comment's commit-space line range. Parity with make_new_comment_layout's
+	-- <C-r>; replies need no drift translation because the anchor is the
+	-- existing thread location, which is already in commit-space.
+	local function queue_reply_as_review()
+		local body_lines = vim.api.nvim_buf_get_lines(new_reply_popup.bufnr, 0, -1, false)
+		local body = table.concat(body_lines, "\n")
+		if body == "" then
+			vim.notify("Empty body; nothing to queue", vim.log.levels.WARN)
+			return
+		end
+		if type(git.start_pending_review) ~= "function" or type(git.add_review_comment) ~= "function" then
+			vim.notify("submit-review not available for this provider")
+			return
+		end
+		local first = thread.comments and thread.comments[1]
+		if not first then
+			vim.notify("Cannot queue: thread has no comments to anchor to", vim.log.levels.ERROR)
+			return
+		end
+		-- Derive the file path from the source buffer; ReviewThread doesn't
+		-- carry a path field. Mirror the pattern in comment.M.comment.
+		git.get_git_root(vim.schedule_wrap(function(git_root)
+			if not git_root or git_root == "" then
+				vim.notify("Not a git repository.", vim.log.levels.ERROR)
+				return
+			end
+			local buffer_path = vim.api.nvim_buf_is_valid(source_bufnr) and vim.api.nvim_buf_get_name(source_bufnr) or ""
+			if buffer_path == "" then
+				vim.notify("Cannot queue: source buffer has no name", vim.log.levels.ERROR)
+				return
+			end
+			local relative_path = buffer_path:sub(#git_root + 2)
+			git.start_pending_review(vim.schedule_wrap(function(review_id, err)
+				if not review_id then
+					vim.notify(err or "Could not start review", vim.log.levels.ERROR)
+					return
+				end
+				git.add_review_comment(
+					review_id,
+					relative_path,
+					first.start_line or first.end_line,
+					first.end_line,
+					body,
+					vim.schedule_wrap(function(ok)
+						if ok then
+							vim.notify("Queued as review comment")
+							if layout then
+								layout:unmount()
+							end
+						else
+							vim.notify("Failed to queue review comment", vim.log.levels.ERROR)
+						end
+					end)
+				)
+			end))
+		end))
+	end
+
+	for _, mode in ipairs({ "n", "i" }) do
+		new_reply_popup:map(mode, "<C-r>", queue_reply_as_review, { noremap = true })
+	end
 
 	-- Single scrollable popup holding the entire conversation.
 	local count_label = #thread.comments .. " comment" .. (#thread.comments == 1 and "" or "s")
@@ -873,7 +958,7 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	table.insert(popups, comment_reference_popup)
 
 	git.get_git_user()
-	local new_comment_popup = M.make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ 󰌑 Submit ]")
+	local new_comment_popup = M.make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ <C-r> Queue review ] | [ 󰌑 Submit ]")
 
 	for _, mode in ipairs({ "n", "i" }) do
 		new_comment_popup:map(mode, "<M-s>", function()
@@ -953,6 +1038,65 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 			)
 		end)
 	end)
+
+	local function queue_review()
+		if type(git.start_pending_review) ~= "function" then
+			vim.notify("submit-review not available for this provider")
+			return
+		end
+		local body_lines = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, false)
+		local body = table.concat(body_lines, "\n")
+		if body == "" then
+			vim.notify("Empty body; nothing to queue", vim.log.levels.WARN)
+			return
+		end
+		local drift = require("pr.drift")
+		local git_root = git.git_root
+		drift.get_for_buffer(source_bufnr, git_root, relative_path, function(drift_map)
+			local commit_start = start_line
+			local commit_end = end_line
+			if drift_map then
+				commit_start = drift.buffer_to_commit(drift_map, start_line)
+				commit_end = drift.buffer_to_commit(drift_map, end_line)
+			end
+			if commit_start == nil or commit_end == nil then
+				vim.notify(
+					"Cannot queue: selected lines are not in the PR's committed diff (uncommitted local changes). Commit your changes or select a line that exists in the PR.",
+					vim.log.levels.WARN
+				)
+				return
+			end
+			git.start_pending_review(vim.schedule_wrap(function(review_id, err)
+				if not review_id then
+					vim.notify(err or "Could not start review", vim.log.levels.ERROR)
+					return
+				end
+				if type(git.add_review_comment) ~= "function" then
+					vim.notify("submit-review not available for this provider")
+					return
+				end
+				git.add_review_comment(
+					review_id,
+					relative_path,
+					commit_start,
+					commit_end,
+					body,
+					vim.schedule_wrap(function(ok)
+						if ok then
+							vim.notify("Queued as review comment")
+							layout:unmount()
+						else
+							vim.notify("Failed to queue review comment", vim.log.levels.ERROR)
+						end
+					end)
+				)
+			end))
+		end)
+	end
+
+	for _, mode in ipairs({ "n", "i" }) do
+		new_comment_popup:map(mode, "<C-r>", queue_review, { noremap = true })
+	end
 
 	return layout
 end
@@ -1054,6 +1198,78 @@ function M.make_pr_edit_layout(metadata, callbacks)
 		p:map({ "n", "i" }, "<C-s>", submit, { noremap = true })
 		p:map("n", "<Esc><Esc>", cancel, { noremap = true })
 		p:map("n", "q", cancel, { noremap = true })
+	end
+
+	return layout
+end
+
+---Build the review submission layout (pending list above, body editor below).
+---@param pending PendingComment[]
+---@param callbacks { on_submit: fun(event: string, body: string, unmount: fun()), on_discard: fun() }
+---@return NuiLayout
+function M.make_review_layout(pending, callbacks)
+	local list_lines = M._render_pending_list(pending)
+	local list_height = math.max(#list_lines + 2, 6)
+
+	local list_popup = Popup({
+		border = { style = "rounded", text = { top = " Pending review (" .. tostring(pending and #pending or 0) .. ") " } },
+		buf_options = { modifiable = false, readonly = true },
+		win_options = { wrap = false, foldenable = false },
+	})
+	local body_popup = Popup({
+		border = { style = "rounded", text = { top = " Review body " } },
+		buf_options = { modifiable = true, filetype = "markdown" },
+		win_options = { wrap = true, spell = false, foldenable = false },
+		enter = true,
+	})
+
+	local layout = Layout(
+		{ position = "50%", size = { width = 90, height = 30 }, relative = "editor" },
+		Layout.Box({
+			Layout.Box(list_popup, { size = list_height }),
+			Layout.Box(body_popup, { grow = 1 }),
+		}, { dir = "col" })
+	)
+
+	local function submit(ev)
+		local body = table.concat(vim.api.nvim_buf_get_lines(body_popup.bufnr, 0, -1, false), "\n")
+		callbacks.on_submit(ev, body, function()
+			layout:unmount()
+		end)
+	end
+
+	local function close()
+		layout:unmount()
+	end
+
+	local function discard()
+		local choice = vim.fn.confirm("Discard pending review?", "&Discard\n&Cancel", 2)
+		if choice == 1 then
+			callbacks.on_discard()
+			layout:unmount()
+		end
+	end
+
+	layout:mount()
+
+	-- Populate the list popup after mount so the buffer is associated with a window.
+	vim.bo[list_popup.bufnr].modifiable = true
+	vim.api.nvim_buf_set_lines(list_popup.bufnr, 0, -1, false, list_lines)
+	vim.bo[list_popup.bufnr].modifiable = false
+
+	for _, p in ipairs({ list_popup, body_popup }) do
+		p:map("n", "a", function()
+			submit("APPROVE")
+		end, { noremap = true })
+		p:map("n", "r", function()
+			submit("REQUEST_CHANGES")
+		end, { noremap = true })
+		p:map("n", "c", function()
+			submit("COMMENT")
+		end, { noremap = true })
+		p:map("n", "d", discard, { noremap = true })
+		p:map("n", "q", close, { noremap = true })
+		p:map("n", "<Esc><Esc>", close, { noremap = true })
 	end
 
 	return layout

@@ -208,6 +208,14 @@ function M.setup(opts)
 		desc = "Show or edit PR info",
 	})
 
+	vim.api.nvim_create_user_command("PRReview", function()
+		require("pr.review").show()
+	end, { desc = "Open pending review for submission" })
+
+	vim.api.nvim_create_user_command("PRReviewDiscard", function()
+		require("pr.review")._discard()
+	end, { desc = "Discard pending review" })
+
 	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
 		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
 		vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {
@@ -302,6 +310,9 @@ function M.refresh(opts)
 	end
 	if type(git.clear_checks) == "function" then
 		git.clear_checks()
+	end
+	if type(git.clear_pending_review) == "function" then
+		git.clear_pending_review()
 	end
 	pcall(function()
 		require("pr.drift").invalidate_all()

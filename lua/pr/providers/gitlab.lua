@@ -1,5 +1,6 @@
 local Job = require("plenary.job")
 local util = require("pr.util")
+local local_review = require("pr.review_local")
 local M = {}
 
 M.git_root = ""
@@ -11,6 +12,8 @@ M.git_user = ""
 M.repo_info = {}
 M.pr_number = 0
 M.base_sha = ""
+---@type string?
+M.pending_review_id = nil
 
 --- DiffRefs required when posting a new inline comment. Populated as a side-effect
 --- of `get_comments` (returned by the same GraphQL query) and used by `M.comment`.
@@ -971,6 +974,95 @@ function M.clear_checks()
 	M.checks = nil
 end
 
+--- GitLab has no server-side draft-review concept that bundles multiple inline
+--- comments + an approval into a single submit step. We fake it with a local
+--- on-disk queue (review_local), keyed by (provider, owner, repo, pr). The
+--- review_id is the literal string "local" since there's no upstream id to
+--- track.
+---@param callback fun(review_id: string?, err: string?)
+function M.start_pending_review(callback)
+	callback = callback or function(_, _) end
+	M.pending_review_id = "local"
+	callback("local")
+end
+
+---@param _review_id string
+---@param relative_path string
+---@param start_line integer
+---@param end_line integer
+---@param body string
+---@param callback fun(success: boolean, err: string?)
+function M.add_review_comment(_review_id, relative_path, start_line, end_line, body, callback)
+	callback = callback or function(_, _) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(false, "no repo info")
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr)
+			if not pr or pr == 0 then
+				return callback(false, "no PR")
+			end
+			local_review.save("gitlab", owner, repo, pr, {
+				id = tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999)),
+				path = relative_path,
+				start_line = start_line,
+				end_line = end_line,
+				body = body,
+			})
+			callback(true)
+		end))
+	end))
+end
+
+---@param _review_id string
+---@param callback fun(comments: PendingComment[])
+function M.list_review_comments(_review_id, callback)
+	callback = callback or function(_) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback({})
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr)
+			if not pr or pr == 0 then
+				return callback({})
+			end
+			callback(local_review.load("gitlab", owner, repo, pr))
+		end))
+	end))
+end
+
+---@param _review_id string
+---@param event string
+---@param _body string?
+---@param callback fun(success: boolean, err: string?)
+function M.submit_review(_review_id, event, _body, callback)
+	callback = callback or function(_, _) end
+	-- v1: emit a notification per pending comment + event; the real glab/api wiring
+	-- is deferred to a follow-up plan. For now we drop the pending state so the
+	-- user sees the right "no pending" state on the next :PRReview invocation.
+	vim.notify("gitlab submit_review (" .. event .. ") not implemented end-to-end; pending comments will be retained until you discard", vim.log.levels.WARN)
+	callback(false, "not implemented end-to-end")
+end
+
+---@param _review_id string
+---@param callback fun(success: boolean, err: string?)
+function M.discard_pending_review(_review_id, callback)
+	callback = callback or function(_, _) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(false, "no repo info")
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr)
+			if not pr or pr == 0 then
+				return callback(false, "no PR")
+			end
+			local_review.clear("gitlab", owner, repo, pr)
+			M.pending_review_id = nil
+			callback(true)
+		end))
+	end))
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -983,6 +1075,7 @@ function M.clear()
 	M.pr_list = {}
 	M.pr_metadata = nil
 	M.checks = nil
+	M.pending_review_id = nil
 end
 
 function M.clear_comments()
@@ -997,6 +1090,10 @@ function M.clear_pr_number()
 	M.pr_number = 0
 	-- diff_refs are scoped to a specific MR, so drop them with the pr number.
 	M.diff_refs = nil
+end
+
+function M.clear_pending_review()
+	M.pending_review_id = nil
 end
 
 return M

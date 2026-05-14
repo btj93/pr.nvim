@@ -28,6 +28,9 @@ M.pr_metadata = nil
 ---@type CheckRun[]|nil
 M.checks = nil
 
+---@type integer?
+M.pending_review_id = nil
+
 ---@type ReactionPaletteEntry[]
 M.reaction_palette = {
 	{ content = "THUMBS_UP", glyph = "👍" },
@@ -1293,6 +1296,284 @@ function M.update_pr_metadata(fields, callback)
 	end))
 end
 
+---Start (or reuse) a draft review on the current PR. Returns the review id.
+---@param callback fun(review_id: integer?, err: string?)
+function M.start_pending_review(callback)
+	callback = callback or function(_, _) end
+	if M.pending_review_id then
+		return callback(M.pending_review_id)
+	end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(nil, "no repo info")
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number or pr_number == 0 then
+				return callback(nil, "no PR")
+			end
+			-- Check whether the viewer already has a pending review on this PR.
+			Job:new({
+				command = "gh",
+				args = { "api", string.format("/repos/%s/%s/pulls/%d/reviews", owner, repo, pr_number), "--paginate" },
+				on_exit = vim.schedule_wrap(function(j, code)
+					if code ~= 0 then
+						return callback(nil, "list reviews failed")
+					end
+					local body = table.concat(j:result() or {}, "\n")
+					local ok, raw = pcall(vim.fn.json_decode, body)
+					if not ok or type(raw) ~= "table" then
+						raw = {}
+					end
+					for _, r in ipairs(raw) do
+						if r.state == "PENDING" and r.user and r.user.login == M.git_user then
+							M.pending_review_id = r.id
+							return callback(r.id)
+						end
+					end
+					-- No pending review found: create one anchored at the PR's head commit.
+					M.get_commit_hash(vim.schedule_wrap(function(head_sha)
+						if not head_sha or head_sha == "" then
+							return callback(nil, "no head sha")
+						end
+						Job:new({
+							command = "gh",
+							args = {
+								"api",
+								string.format("/repos/%s/%s/pulls/%d/reviews", owner, repo, pr_number),
+								"-X",
+								"POST",
+								"-f",
+								"commit_id=" .. head_sha,
+							},
+							on_exit = vim.schedule_wrap(function(j2, c2)
+								if c2 ~= 0 then
+									return callback(nil, "create review failed")
+								end
+								local b2 = table.concat(j2:result() or {}, "\n")
+								local ok2, data = pcall(vim.fn.json_decode, b2)
+								if not ok2 or type(data) ~= "table" or not data.id then
+									return callback(nil, "create review parse failed")
+								end
+								M.pending_review_id = data.id
+								callback(data.id)
+							end),
+						}):start()
+					end))
+				end),
+			}):start()
+		end))
+	end))
+end
+
+---Add a comment to an existing pending review.
+---@param review_id integer
+---@param relative_path string
+---@param start_line integer  -- commit-space
+---@param end_line integer    -- commit-space
+---@param body string
+---@param callback fun(success: boolean, err: string?)
+function M.add_review_comment(review_id, relative_path, start_line, end_line, body, callback)
+	callback = callback or function(_, _) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(false, "no repo info")
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number or pr_number == 0 then
+				return callback(false, "no PR")
+			end
+			local args = {
+				"api",
+				string.format("/repos/%s/%s/pulls/%d/reviews/%d/comments", owner, repo, pr_number, review_id),
+				"-X",
+				"POST",
+				"-f",
+				"path=" .. relative_path,
+				"-F",
+				"line=" .. tostring(end_line),
+				"-f",
+				"body=" .. body,
+				"-f",
+				"side=RIGHT",
+			}
+			if start_line and start_line < end_line then
+				table.insert(args, "-F")
+				table.insert(args, "start_line=" .. tostring(start_line))
+				table.insert(args, "-f")
+				table.insert(args, "start_side=RIGHT")
+			end
+			local stderr_lines = {}
+			Job:new({
+				command = "gh",
+				args = args,
+				on_stderr = function(_, line)
+					if line and line ~= "" then
+						table.insert(stderr_lines, line)
+					end
+				end,
+				on_exit = vim.schedule_wrap(function(_, code)
+					if code ~= 0 then
+						local err = table.concat(stderr_lines, "\n")
+						if err == "" then
+							err = "gh api exited " .. tostring(code)
+						end
+						vim.notify(err, vim.log.levels.ERROR)
+						return callback(false, err)
+					end
+					callback(true)
+				end),
+			}):start()
+		end))
+	end))
+end
+
+---List comments queued under a pending review. Returns commit-space line numbers.
+---@param review_id integer
+---@param callback fun(comments: PendingComment[])
+function M.list_review_comments(review_id, callback)
+	callback = callback or function(_) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback({})
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number or pr_number == 0 then
+				return callback({})
+			end
+			Job:new({
+				command = "gh",
+				args = {
+					"api",
+					string.format("/repos/%s/%s/pulls/%d/reviews/%d/comments", owner, repo, pr_number, review_id),
+					"--paginate",
+				},
+				on_exit = vim.schedule_wrap(function(j, code)
+					if code ~= 0 then
+						return callback({})
+					end
+					local body = table.concat(j:result() or {}, "\n")
+					if body == "" then
+						return callback({})
+					end
+					local ok, raw = pcall(vim.fn.json_decode, body)
+					if not ok or type(raw) ~= "table" then
+						return callback({})
+					end
+					local out = {}
+					for _, c in ipairs(raw) do
+						local start_line = c.start_line
+						if start_line == vim.NIL or not start_line then
+							start_line = c.line
+						end
+						table.insert(out, {
+							id = c.id,
+							path = c.path or "",
+							start_line = start_line or 0,
+							end_line = c.line or 0,
+							body = c.body or "",
+						})
+					end
+					callback(out)
+				end),
+			}):start()
+		end))
+	end))
+end
+
+---Submit a pending review with the given event.
+---@param review_id integer
+---@param event "APPROVE"|"REQUEST_CHANGES"|"COMMENT"
+---@param body string?
+---@param callback fun(success: boolean, err: string?)
+function M.submit_review(review_id, event, body, callback)
+	callback = callback or function(_, _) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(false, "no repo info")
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number or pr_number == 0 then
+				return callback(false, "no PR")
+			end
+			local stderr_lines = {}
+			Job:new({
+				command = "gh",
+				args = {
+					"api",
+					string.format("/repos/%s/%s/pulls/%d/reviews/%d/events", owner, repo, pr_number, review_id),
+					"-X",
+					"POST",
+					"-f",
+					"event=" .. event,
+					"-f",
+					"body=" .. (body or ""),
+				},
+				on_stderr = function(_, line)
+					if line and line ~= "" then
+						table.insert(stderr_lines, line)
+					end
+				end,
+				on_exit = vim.schedule_wrap(function(_, code)
+					if code ~= 0 then
+						local err = table.concat(stderr_lines, "\n")
+						if err == "" then
+							err = "gh api submit exited " .. tostring(code)
+						end
+						vim.notify(err, vim.log.levels.ERROR)
+						return callback(false, err)
+					end
+					M.pending_review_id = nil
+					callback(true)
+				end),
+			}):start()
+		end))
+	end))
+end
+
+---Discard a pending review without submitting it.
+---@param review_id integer
+---@param callback fun(success: boolean, err: string?)
+function M.discard_pending_review(review_id, callback)
+	callback = callback or function(_, _) end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback(false, "no repo info")
+		end
+		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number or pr_number == 0 then
+				return callback(false, "no PR")
+			end
+			local stderr_lines = {}
+			Job:new({
+				command = "gh",
+				args = {
+					"api",
+					string.format("/repos/%s/%s/pulls/%d/reviews/%d", owner, repo, pr_number, review_id),
+					"-X",
+					"DELETE",
+				},
+				on_stderr = function(_, line)
+					if line and line ~= "" then
+						table.insert(stderr_lines, line)
+					end
+				end,
+				on_exit = vim.schedule_wrap(function(_, code)
+					if code ~= 0 then
+						local err = table.concat(stderr_lines, "\n")
+						if err == "" then
+							err = "gh api delete exited " .. tostring(code)
+						end
+						vim.notify(err, vim.log.levels.ERROR)
+						return callback(false, err)
+					end
+					M.pending_review_id = nil
+					callback(true)
+				end),
+			}):start()
+		end))
+	end))
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -1304,6 +1585,7 @@ function M.clear()
 	M.pr_list = {}
 	M.pr_metadata = nil
 	M.checks = nil
+	M.pending_review_id = nil
 end
 
 function M.clear_comments()
@@ -1320,6 +1602,10 @@ end
 
 function M.clear_pr_list()
 	M.pr_list = {}
+end
+
+function M.clear_pending_review()
+	M.pending_review_id = nil
 end
 
 return M

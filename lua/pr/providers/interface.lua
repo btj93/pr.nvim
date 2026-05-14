@@ -21,6 +21,7 @@
 --   M.pr_list          table<string, PRSummary[]>  cached PR summaries keyed by filter
 --   M.pr_metadata      PRMetadata?                  cached PR metadata
 --   M.checks           CheckRun[]                   cached CI check runs
+--   M.pending_review_id        integer?|string?              cached pending-review identifier
 --   M.reaction_palette ReactionPaletteEntry[]  addable reactions; empty array hides the emoji action
 --
 -- Functions (each callback fires on the main thread):
@@ -46,7 +47,12 @@
 --   get_pr_metadata(callback)                                    -> callback(metadata: PRMetadata)
 --   update_pr_metadata(fields, callback)                         -> callback(success: boolean, err: string?)
 --   get_checks(callback)                                         -> callback(checks: CheckRun[])
---   clear_pr_metadata() / clear_checks()
+--   start_pending_review(callback)                               -> callback(review_id, err?)
+--   add_review_comment(review_id, path, start, end_, body, cb)   -> callback(success: boolean)
+--   list_review_comments(review_id, callback)                    -> callback(comments: PendingComment[])
+--   submit_review(review_id, event, body, callback)              -> callback(success: boolean, err: string?)
+--   discard_pending_review(review_id, callback)                  -> callback(success: boolean)
+--   clear_pr_metadata() / clear_checks() / clear_pending_review()
 --   clear() / clear_comments() / clear_hunks() / clear_pr_number() / clear_pr_list()
 --
 -- thread.id, comment.database_id, and reactor.database_id are opaque to
@@ -153,5 +159,12 @@
 ---@field conclusion "success"|"failure"|"cancelled"|"skipped"|"neutral"|nil
 ---@field duration_seconds integer?
 ---@field url string
+
+---@class PendingComment
+---@field id integer|string
+---@field path string
+---@field start_line integer  -- commit-space line numbers
+---@field end_line integer
+---@field body string
 
 return {}
