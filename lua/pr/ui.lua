@@ -69,27 +69,6 @@ end
 -- Exposed for unit testing only.
 M._check_glyph = check_glyph
 
---- Number of visual rows `lines` will occupy in a window of the given content `width`
---- when 'wrap' is enabled. Used to size popup boxes that contain wrapped comment text.
----@param lines string[]
----@param width integer
----@return integer
-local function visual_height(lines, width)
-	if not width or width <= 0 then
-		return #lines
-	end
-	local h = 0
-	for _, line in ipairs(lines) do
-		local dw = vim.fn.strdisplaywidth(line)
-		if dw == 0 then
-			h = h + 1
-		else
-			h = h + math.ceil(dw / width)
-		end
-	end
-	return h
-end
-
 --- Pure renderer for a comment thread.
 --- Produces the buffer contents for the unified scrollable comments view, plus
 --- a lookup from each buffer line to the comment index it belongs to, and
@@ -1648,11 +1627,6 @@ end
 
 function M.setup()
 	-- Drafts are now persisted lazily by the `pr.drafts` module; no upfront load needed.
-end
-
-local function replace_chars(pos, str, r)
-	return vim.fn.slice(str, 0, pos) .. r .. vim.fn.slice(str, pos + 40)
-	-- return ("%s%s%s"):format(str:sub(1, pos - #r), r, str:sub(pos + #r))
 end
 
 ---@class Action

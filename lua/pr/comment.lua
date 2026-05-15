@@ -12,16 +12,12 @@ M.wins = {}
 M.generations = {}
 M.enabled = false
 
--- File-local helper. Encapsulates the sign + extmark placement so M.draw and
--- the drift-rebased variant share the same body.
+-- File-local helper. Places the gutter signs for a thread. Inline comment
+-- text (below the line / at EOL) is published by `lua/pr/diagnostics.lua`
+-- via `vim.diagnostic`, so the user's diagnostic config controls how it
+-- renders. Multi-line range connectors (┌/│/└) stay here because
+-- vim.diagnostic can't express them.
 local function place_decorations(buf, thread, first_comment, start_line, end_line)
-	local text = "      " .. first_comment.author .. ": " .. first_comment.body:gsub("\r\n", " "):gsub("\n", " ")
-	local hl = "DiagnosticVirtualLinesWarn"
-	if thread.is_resolved then
-		hl = "DiagnosticVirtualLinesOk"
-	end
-	local c = { { text, hl } }
-
 	if start_line == end_line then
 		vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment, buf, { lnum = end_line })
 	else
@@ -30,19 +26,6 @@ local function place_decorations(buf, thread, first_comment, start_line, end_lin
 			vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_connector, buf, { lnum = i })
 		end
 		vim.fn.sign_place(0, config.opts.highlights.sign_group, config.opts.highlights.sign_comment_multi_line_end, buf, { lnum = end_line })
-	end
-
-	if config.opts.virtual_text then
-		vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
-			virt_text = c,
-			virt_text_pos = "eol",
-		})
-	end
-
-	if config.opts.virtual_line then
-		vim.api.nvim_buf_set_extmark(buf, config.opts.highlights.comments_ns_id, end_line - 1, -1, {
-			virt_lines = { c },
-		})
 	end
 end
 

@@ -48,20 +48,28 @@ return {
   opts = {
     provider = "github", -- "github" | "gitlab" | "bitbucket"
     picker = "snacks", -- "snacks" | "telescope" | "fzf"
-    -- Suppress inline rendering of outdated review threads (still accessible
-    -- through the popup and picker filters). Defaults to false.
+    -- Show outdated threads inline. Defaults to false because their line numbers
+    -- refer to a previous commit's file state. Outdated threads remain visible
+    -- via the popup and picker filters regardless.
     show_outdated_inline = false,
-    -- Suppress inline rendering of resolved threads. Defaults to true (no
-    -- change from previous behavior).
-    show_resolved_inline = true,
+    -- Show resolved threads inline. Defaults to false to reduce buffer clutter;
+    -- resolved threads remain visible via the popup and picker filters. When
+    -- set to true, resolved threads publish at `diagnostics.severity_resolved`
+    -- (INFO by default) so your diagnostic config can color them distinctly.
+    show_resolved_inline = false,
     diagnostics = {
-      -- Surface unresolved PR threads as vim.diagnostic entries (so plugins like
-      -- trouble.nvim, lsp_lines, and :Telescope diagnostics pick them up).
+      -- All inline comment text now flows through vim.diagnostic. Inline display
+      -- itself (below the line / at end-of-line) follows your `vim.diagnostic.config`
+      -- — see the "Inline comment display" section below. Trouble, lsp_lines,
+      -- :Telescope diagnostics, and statusline plugins pick the entries up.
       enabled = true,
-      severity = vim.diagnostic.severity.HINT, -- default: HINT so PR threads don't
-      -- override real LSP/lint errors.
-      include_resolved = false,
-      include_outdated = false,
+      severity = vim.diagnostic.severity.HINT, -- unresolved threads (default HINT
+      -- so PR threads don't override real LSP/lint errors).
+      severity_resolved = vim.diagnostic.severity.INFO, -- resolved threads, when shown.
+      -- include_resolved / include_outdated default to nil = follow show_*_inline.
+      -- Set to true/false here to override the unified knob.
+      include_resolved = nil,
+      include_outdated = nil,
       source = "PR", -- shown in source column of diagnostic plugins
     },
     drafts = {
@@ -280,23 +288,45 @@ From visual mode, select the lines you want to suggest changes for and run `:PRS
 
 Inside the new-comment popup, `<M-s>` toggles wrap / unwrap: if the buffer content is currently a complete suggestion fence, it strips the fence; otherwise it wraps the whole buffer content in a fence. The title bar exposes this as `<M-s> Toggle suggestion` alongside `<C-r> Queue review`.
 
+## Inline comment display
+
+**Inline comment text (below the line or at end-of-line) is rendered by `vim.diagnostic`.** pr.nvim publishes each thread as a `vim.diagnostic` entry in the `pr_threads` namespace; how — and whether — the comment text appears in your buffer is decided by your diagnostic UI config:
+
+- **Lines below the comment** (the multi-line wrapped view): `vim.diagnostic.config({ virtual_lines = true })` (Neovim 0.11+) or install [`lsp_lines.nvim`](https://git.sr.ht/~whynothugo/lsp_lines.nvim).
+- **End-of-line text**: `vim.diagnostic.config({ virtual_text = true })`.
+- **Nothing inline** (popup-only access): leave both off; `:PRComment` / `[c`/`]c` still work; the signcolumn glyphs still show.
+- **Scope just to pr.nvim's threads** (e.g. keep LSP diagnostics inline but suppress PR threads): pass the namespace as the second argument —
+  ```lua
+  vim.diagnostic.config({ virtual_lines = false, virtual_text = false }, require("pr.diagnostics").namespace)
+  ```
+
+The signcolumn glyphs — `󰅺` for single-line threads and the `┌`/`│`/`└` connectors for multi-line ranges — are placed by pr.nvim directly via `vim.fn.sign_place`. They show regardless of your diagnostic config. (pr.nvim also disables `vim.diagnostic`'s own auto-placed severity signs for the `pr_threads` namespace so the gutter doesn't show two signs per thread.)
+
+**Resolved vs unresolved.** pr.nvim publishes resolved threads at `INFO` severity and unresolved threads at `HINT` (configurable via `diagnostics.severity` and `diagnostics.severity_resolved`). Style them distinctly by overriding the severity-based highlight groups in your colorscheme (e.g. `DiagnosticVirtualLinesInfo`, `DiagnosticVirtualLinesHint`). Resolved threads are hidden inline by default — set `show_resolved_inline = true` to include them.
+
+**`:checkhealth pr` warning.** If no virtual-lines / virtual-text renderer is active, `:checkhealth pr` flags it so you know inline text won't display. The signcolumn glyphs still work in that case; you just access the comment body via the popup (`:PRComment`).
+
 ## Diagnostics + quickfix
 
-pr.nvim publishes unresolved PR threads as `vim.diagnostic` entries in a dedicated namespace (`pr_threads`). Anything that reads diagnostics — trouble.nvim, lsp_lines, the built-in `:Telescope diagnostics`, lualine's diagnostics component, etc. — automatically picks up PR threads alongside LSP errors and linter warnings.
+Plugins that read `vim.diagnostic` — trouble.nvim, the built-in `:Telescope diagnostics`, lualine's diagnostics component, etc. — pick up PR threads alongside LSP errors and linter warnings.
 
-By default the severity is `HINT` so threads don't overshadow real LSP/lint errors. Tune via:
+By default the severity is `HINT` (unresolved) / `INFO` (resolved) so threads don't overshadow real LSP/lint errors. Tune via:
 
 ```lua
 diagnostics = {
   enabled = true,
-  severity = vim.diagnostic.severity.WARN, -- promote to WARN if you want them louder
-  include_resolved = false, -- set true to show resolved threads too
-  include_outdated = true, -- show outdated threads (caveat: line numbers may be stale)
+  severity = vim.diagnostic.severity.WARN, -- promote unresolved threads if you want them louder
+  severity_resolved = vim.diagnostic.severity.INFO,
+  -- include_resolved / include_outdated default to nil = follow `show_*_inline`.
+  -- Set explicitly here to override the unified knob (e.g. show resolved in Trouble
+  -- but not inline, or vice versa).
+  include_resolved = nil,
+  include_outdated = nil,
   source = "PR",
 }
 ```
 
-Set `diagnostics.enabled = false` to opt out entirely (inline signs continue to work).
+Set `diagnostics.enabled = false` to opt out entirely (signcolumn glyphs continue to work).
 
 `:PRQuickfix` dumps all unresolved threads across the PR into the quickfix list — useful when you want to walk every thread without opening files manually. Filter modes:
 

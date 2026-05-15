@@ -232,8 +232,8 @@ function M.invalidate_orphans(known)
 	end
 
 	for key, _ in pairs(data.new_drafts or {}) do
-		local path = key:match("^(.-):%d+:%d+$") or key
-		if known.paths and not known.paths[path] then
+		local draft_path = key:match("^(.-):%d+:%d+$") or key
+		if known.paths and not known.paths[draft_path] then
 			data.new_drafts[key] = nil
 			mutated = true
 		end

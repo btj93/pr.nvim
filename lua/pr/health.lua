@@ -119,6 +119,34 @@ function M.check()
 	else
 		vim.health.error("could not load provider module pr.providers." .. provider_name)
 	end
+
+	-- Inline comment text now flows through vim.diagnostic. If the user doesn't
+	-- have a virtual-lines / virtual-text renderer active, the buffer overlay
+	-- won't show below commented lines (signs in the gutter still work). Warn
+	-- non-fatally so users can act on it.
+	local diag_ns = require("pr.diagnostics").namespace
+	local diag_cfg = vim.diagnostic.config(nil, diag_ns) or {}
+	local has_vlines = diag_cfg.virtual_lines and true or false
+	local has_vtext = diag_cfg.virtual_text and true or false
+	local has_lsp_lines = pcall(require, "lsp_lines")
+	if has_vlines or has_vtext or has_lsp_lines then
+		local parts = {}
+		if has_vlines then
+			table.insert(parts, "virtual_lines")
+		end
+		if has_vtext then
+			table.insert(parts, "virtual_text")
+		end
+		if has_lsp_lines then
+			table.insert(parts, "lsp_lines.nvim")
+		end
+		vim.health.ok("inline comment text will render via vim.diagnostic (" .. table.concat(parts, ", ") .. ")")
+	else
+		vim.health.warn("no virtual-lines/virtual-text renderer is active; inline comment text will not display below commented lines", {
+			"Enable `vim.diagnostic.config({ virtual_lines = true })` (Neovim 0.11+), or install `lsp_lines.nvim`.",
+			"See README → 'Inline comment display' for namespace-scoped control.",
+		})
+	end
 end
 
 return M

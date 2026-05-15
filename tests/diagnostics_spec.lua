@@ -17,18 +17,19 @@ describe("diagnostics._build", function()
 		}, opts or {})
 	end
 
-	it("builds entries for unresolved non-outdated threads", function()
+	it("builds entries for unresolved non-outdated threads at HINT severity", function()
 		local entries = diag._build({ thread() }, nil)
 		assert.equals(1, #entries)
 		assert.equals(4, entries[1].lnum) -- start_line 5 → lnum 4 (0-indexed)
 		assert.equals(6, entries[1].end_lnum) -- end_line 7 → end_lnum 6
 		assert.equals(0, entries[1].col)
 		assert.equals("PR", entries[1].source)
+		assert.equals(vim.diagnostic.severity.HINT, entries[1].severity)
 		assert.matches("alice", entries[1].message)
 		assert.matches("looks risky", entries[1].message)
 	end)
 
-	it("skips resolved threads by default", function()
+	it("skips resolved threads by default (show_resolved_inline defaults to false)", function()
 		assert.equals(0, #diag._build({ thread({ is_resolved = true }) }, nil))
 	end)
 
@@ -36,12 +37,32 @@ describe("diagnostics._build", function()
 		assert.equals(0, #diag._build({ thread({ is_outdated = true }) }, nil))
 	end)
 
-	it("includes resolved threads when configured", function()
+	it("includes resolved threads when show_resolved_inline = true (unified knob)", function()
+		require("pr.config").setup({ show_resolved_inline = true })
+		local entries = diag._build({ thread({ is_resolved = true }) }, nil)
+		assert.equals(1, #entries)
+		assert.equals(vim.diagnostic.severity.INFO, entries[1].severity)
+	end)
+
+	it("includes resolved threads when diagnostics.include_resolved = true (back-compat)", function()
 		require("pr.config").setup({ diagnostics = { include_resolved = true } })
 		assert.equals(1, #diag._build({ thread({ is_resolved = true }) }, nil))
 	end)
 
-	it("includes outdated threads when configured", function()
+	it("explicit diagnostics.include_resolved = false overrides show_resolved_inline = true", function()
+		require("pr.config").setup({
+			show_resolved_inline = true,
+			diagnostics = { include_resolved = false },
+		})
+		assert.equals(0, #diag._build({ thread({ is_resolved = true }) }, nil))
+	end)
+
+	it("includes outdated threads when show_outdated_inline = true", function()
+		require("pr.config").setup({ show_outdated_inline = true })
+		assert.equals(1, #diag._build({ thread({ is_outdated = true }) }, nil))
+	end)
+
+	it("includes outdated threads when diagnostics.include_outdated = true (back-compat)", function()
 		require("pr.config").setup({ diagnostics = { include_outdated = true } })
 		assert.equals(1, #diag._build({ thread({ is_outdated = true }) }, nil))
 	end)
@@ -68,10 +89,29 @@ describe("diagnostics._build", function()
 		assert.equals(0, #diag._build({}, nil))
 	end)
 
-	it("truncates very long bodies in the message", function()
+	it("publishes the full body — no 120-char truncation", function()
 		local long = string.rep("x", 200)
 		local t = thread({ comments = { { author = "a", body = long, start_line = 1, end_line = 1 } } })
 		local entries = diag._build({ t }, nil)
-		assert.is_true(#entries[1].message < 150)
+		-- "a: " prefix (3 chars) + 200-char body = 203 chars total
+		assert.equals(203, #entries[1].message)
+	end)
+
+	it("flattens CRLF and LF in the body to single spaces", function()
+		local body = "line1\r\nline2\nline3"
+		local t = thread({ comments = { { author = "a", body = body, start_line = 1, end_line = 1 } } })
+		local entries = diag._build({ t }, nil)
+		assert.is_nil(entries[1].message:find("\r"))
+		assert.is_nil(entries[1].message:find("\n"))
+		assert.matches("line1 line2 line3", entries[1].message)
+	end)
+
+	it("custom severity_resolved is respected", function()
+		require("pr.config").setup({
+			show_resolved_inline = true,
+			diagnostics = { severity_resolved = vim.diagnostic.severity.WARN },
+		})
+		local entries = diag._build({ thread({ is_resolved = true }) }, nil)
+		assert.equals(vim.diagnostic.severity.WARN, entries[1].severity)
 	end)
 end)

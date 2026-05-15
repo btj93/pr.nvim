@@ -9,7 +9,6 @@ local git = require("pr.provider").get_provider()
 ---@param opts? pr.pickers.PickCommentsConfig
 ---@return nil
 function M.pick_comments(opts)
-	local telescope = require("telescope")
 	local pickers = require("telescope.pickers")
 	local finders = require("telescope.finders")
 	local sorters = require("telescope.sorters")
@@ -199,10 +198,8 @@ end
 ---@param format? fun(item: table): string
 ---@return nil
 function M.pick_hunks(format)
-	local telescope = require("telescope")
 	local pickers = require("telescope.pickers")
 	local finders = require("telescope.finders")
-	local previewers = require("telescope.previewers")
 	local sorters = require("telescope.sorters")
 	local actions = require("telescope.actions")
 	local action_state = require("telescope.actions.state")

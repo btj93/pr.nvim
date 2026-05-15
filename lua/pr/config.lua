@@ -3,8 +3,6 @@ local M = {}
 M.opts = {
 	provider = "github", -- github, gitlab, bitbucket
 	picker = "snacks", -- telescope, fzf, snacks
-	virtual_text = false,
-	virtual_line = true,
 	sign = "󰅺",
 	multi_line_sign = {
 		start_line = "┌",
@@ -49,24 +47,38 @@ M.opts = {
 		comments = true,
 		hunks = false,
 	},
-	--- Show outdated comment threads inline (signs + virtual text/lines).
-	--- `false` (default) skips them entirely because GitHub reports their line
-	--- numbers against the commit when the comment was made, so they'd be
-	--- decorated at locations that may have moved or no longer exist in the
-	--- current buffer. Outdated threads are still surfaced via the popup
-	--- (which marks them) and via picker filters.
+	--- Show outdated comment threads inline (signcolumn glyphs + diagnostic
+	--- entry below the line). `false` (default) skips them entirely because
+	--- GitHub reports their line numbers against the commit when the comment
+	--- was made, so they'd be decorated at locations that may have moved or
+	--- no longer exist in the current buffer. Outdated threads are still
+	--- surfaced via the popup (which marks them) and via picker filters.
+	---
+	--- This is the unified knob: if `diagnostics.include_outdated` is nil it
+	--- falls back to this value; an explicit boolean there still wins.
 	show_outdated_inline = false,
-	--- Show resolved threads inline (signs + virtual text/lines).
-	--- Defaults to true because users typically want the visual distinction
-	--- (background colored differently) for resolved threads. Set to false to
-	--- suppress all inline rendering of resolved threads; they remain accessible
-	--- through the popup and the picker filters.
-	show_resolved_inline = true,
+	--- Show resolved threads inline (signcolumn glyphs + diagnostic entry).
+	--- Defaults to `false` to reduce visual clutter — resolved threads remain
+	--- accessible through the popup and picker filters. Set to `true` to keep
+	--- them visible in the buffer; when shown they're published at INFO
+	--- severity (see `diagnostics.severity_resolved`) so your diagnostic
+	--- config can style them distinctly from unresolved threads.
+	---
+	--- This is the unified knob: if `diagnostics.include_resolved` is nil it
+	--- falls back to this value; an explicit boolean there still wins.
+	show_resolved_inline = false,
 	diagnostics = {
 		enabled = true,
 		severity = vim.diagnostic.severity.HINT,
-		include_resolved = false,
-		include_outdated = false,
+		--- Severity for resolved threads (only published when `show_resolved_inline`
+		--- is true). Lets diagnostic-UI tools (lsp_lines, Trouble, etc.) color
+		--- resolved threads distinctly from unresolved ones via severity-based
+		--- highlight groups.
+		severity_resolved = vim.diagnostic.severity.INFO,
+		--- nil = follow `show_resolved_inline` / `show_outdated_inline`. Explicit
+		--- `true`/`false` still overrides for advanced setups.
+		include_resolved = nil,
+		include_outdated = nil,
 		source = "PR",
 	},
 	auto_refresh = {
