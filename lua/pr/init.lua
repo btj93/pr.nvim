@@ -186,6 +186,12 @@ function M.setup(opts)
 		end,
 	})
 
+	-- Suppress vim.diagnostic's auto-placed severity signs for our namespace.
+	-- pr.nvim places its own signcolumn glyphs (`󰅺` + `┌`/`│`/`└` multi-line
+	-- connectors) via `vim.fn.sign_place`; without this the diagnostic UI
+	-- would draw a second sign on top.
+	pcall(vim.diagnostic.config, { signs = false }, require("pr.diagnostics").namespace)
+
 	ui.setup()
 	comment.setup()
 	hunk.setup()
@@ -195,11 +201,11 @@ function M.setup(opts)
 	end, { desc = "Refresh PR comments and hunks" })
 
 	vim.api.nvim_create_user_command("PRList", function(arg)
-		local opts = nil
+		local pick_opts = nil
 		if arg.args and arg.args ~= "" then
-			opts = { filter = arg.args }
+			pick_opts = { filter = arg.args }
 		end
-		require("pr.picker").pick_prs(opts)
+		require("pr.picker").pick_prs(pick_opts)
 	end, {
 		nargs = "?",
 		complete = function()

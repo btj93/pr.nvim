@@ -1583,6 +1583,12 @@ function M.make_help_menu(thread, comment, new_reply_popup, popup_winid, ctx)
 		},
 	}
 
+	-- Compute the width needed so menu_text (left) and menu_desc (right, drawn
+	-- as a right_align virt_text in the perform handler) don't overlap. We use
+	-- strdisplaywidth so multibyte glyphs are sized correctly.
+	local MIN_GAP = 2
+	local TITLE = "Help"
+	local content_width = vim.fn.strdisplaywidth(TITLE) + 2 -- title + breathing room
 	local lines = {}
 	for k, action in pairs(M.actions) do
 		local t = Text(action.menu_text, "NonText")
@@ -1591,17 +1597,27 @@ function M.make_help_menu(thread, comment, new_reply_popup, popup_winid, ctx)
 			t = Text(action.menu_text)
 		end
 
+		local row_width = vim.fn.strdisplaywidth(action.menu_text or "") + MIN_GAP + vim.fn.strdisplaywidth(action.menu_desc or "")
+		if row_width > content_width then
+			content_width = row_width
+		end
+
 		local menu = Menu.item(Line({ t }), {
 			action = k,
 			can_perform_bool = can_perform_bool,
 		})
 		table.insert(lines, menu)
 	end
+	-- Cap to a sensible maximum so a future pathologically-long description
+	-- can't make the menu take over the screen.
+	if content_width > 120 then
+		content_width = 120
+	end
 
 	local menu = Menu(popup_options, {
 		lines = lines,
-		max_width = 50,
-		min_width = 50,
+		max_width = content_width,
+		min_width = content_width,
 		keymap = {
 			focus_next = { "j", "<Down>", "<Tab>" },
 			focus_prev = { "k", "<Up>", "<S-Tab>" },
