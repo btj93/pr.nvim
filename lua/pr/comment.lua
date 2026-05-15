@@ -393,6 +393,23 @@ function M.refresh(opts)
 			end
 		end
 
+		-- Drop drafts whose target (file / thread / comment) no longer exists
+		-- in the refreshed cache. Keeps the drafts file from accumulating
+		-- orphans across rebases and upstream deletions.
+		pcall(function()
+			local known = { paths = {}, thread_ids = {}, comment_ids = {} }
+			for path, threads in pairs(new_comments or {}) do
+				known.paths[path] = true
+				for _, t in ipairs(threads) do
+					known.thread_ids[tostring(t.id)] = true
+					for _, c in ipairs(t.comments or {}) do
+						known.comment_ids[tostring(c.database_id)] = true
+					end
+				end
+			end
+			require("pr.drafts").invalidate_orphans(known)
+		end)
+
 		pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "PRCommentsRefreshed" })
 	end))
 end

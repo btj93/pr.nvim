@@ -1038,7 +1038,7 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 	table.insert(popups, comment_reference_popup)
 
 	git.get_git_user()
-	local new_comment_popup = M.make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ <C-r> Queue review ] | [ 󰌑 Submit ]")
+	local new_comment_popup = make_new_reply_popup(true, "[<M-s> Toggle suggestion ] | [ <C-r> Queue review ] | [ 󰌑 Submit ]")
 
 	-- New-comment drafts: keyed by the path + anchor range, persisted on every
 	-- buffer change, deleted on successful submit (<CR> or <C-r> queue path).

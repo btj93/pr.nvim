@@ -42,9 +42,18 @@ function M.compute()
 			end
 		end
 	end
-	-- Pending review (from S1c). Treat missing as 0.
-	if p.pending_review_comments then
-		s.pending_review = #p.pending_review_comments
+	-- Pending review count (S1c). For github this lives server-side and isn't
+	-- mirrored locally on the provider; for gitlab/bitbucket it's stored in
+	-- pr.review_local. Read the local-state cache for both — it'll be zero for
+	-- github users until they queue a comment via <C-r>.
+	local ok, review_local = pcall(require, "pr.review_local")
+	if ok and p.repo_info and p.repo_info.owner and p.repo_info.repo and p.pr_number and p.pr_number > 0 then
+		-- Provider name comes from the config so we read the right slice of state.
+		local config_ok, config = pcall(require, "pr.config")
+		if config_ok then
+			local pending = review_local.load(config.opts.provider, p.repo_info.owner, p.repo_info.repo, p.pr_number)
+			s.pending_review = #pending
+		end
 	end
 	return s
 end

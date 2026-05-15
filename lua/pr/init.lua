@@ -259,6 +259,16 @@ function M.setup(opts)
 		vim.notify("PR: issue cache cleared")
 	end, { desc = "Clear cached issues + PRs (forces re-fetch on next completion)" })
 
+	-- Flush any debounced draft writes on quit so unsaved keystrokes persist.
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		group = vim.api.nvim_create_augroup("PRDraftsFlush", { clear = true }),
+		callback = function()
+			pcall(function()
+				require("pr.drafts").flush()
+			end)
+		end,
+	})
+
 	if config.opts.winbar and config.opts.winbar.enabled then
 		local group = vim.api.nvim_create_augroup("PRWinbar", { clear = true })
 		local function apply_winbar()

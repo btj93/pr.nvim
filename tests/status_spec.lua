@@ -54,9 +54,13 @@ describe("status", function()
 			assert.equals(0, s.outdated)
 		end)
 
-		it("counts pending_review when provider exposes it", function()
-			github.pending_review_comments = { { id = 1 }, { id = 2 } }
-			github.pending_review_id = 999
+		it("counts pending_review from review_local for the current PR", function()
+			github.repo_info = { owner = "btj93", repo = "pr.nvim" }
+			-- Point review_local at a temp file so we don't poison real data.
+			local local_review = require("pr.review_local")
+			local_review._set_path(vim.fn.tempname())
+			local_review.save("github", "btj93", "pr.nvim", 1234, { id = 1, path = "a.lua", end_line = 1, body = "x" })
+			local_review.save("github", "btj93", "pr.nvim", 1234, { id = 2, path = "b.lua", end_line = 2, body = "y" })
 			assert.equals(2, status.compute().pending_review)
 		end)
 	end)

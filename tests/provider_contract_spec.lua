@@ -15,10 +15,36 @@ local REQUIRED_METHODS = {
 	"resolve_thread",
 	"unresolve_thread",
 	"delete_comment",
+	"thread_url",
+	-- S1a — PR explorer + checkout
+	"list_prs",
+	"checkout_pr",
+	-- S1b — PR info popup
+	"get_pr_metadata",
+	"update_pr_metadata",
+	"get_checks",
+	-- S1c — submit review
+	"start_pending_review",
+	"add_review_comment",
+	"list_review_comments",
+	"submit_review",
+	"discard_pending_review",
+	-- S2b — conflict-aware edits
+	"refetch_comment",
+	-- S3b — completion
+	"list_collaborators",
+	"list_issues",
+	-- clears
 	"clear",
 	"clear_comments",
 	"clear_hunks",
 	"clear_pr_number",
+	"clear_pr_list",
+	"clear_pr_metadata",
+	"clear_checks",
+	"clear_pending_review",
+	"clear_collaborators",
+	"clear_issues",
 }
 
 local REQUIRED_FIELDS = {
