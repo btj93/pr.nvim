@@ -392,6 +392,8 @@ function M.refresh(opts)
 				end
 			end
 		end
+
+		pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "PRCommentsRefreshed" })
 	end))
 end
 

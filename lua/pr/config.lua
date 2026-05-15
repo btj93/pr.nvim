@@ -89,6 +89,14 @@ M.opts = {
 		-- refetch entirely (faster commits; risk of silent overwrite).
 		enabled = true,
 	},
+	winbar = {
+		-- Set true to enable the built-in winbar showing the PR number and a
+		-- per-file unresolved count on buffers under the git root. Off by default
+		-- because most users drive winbar with their own plugin (heirline / lualine).
+		enabled = false,
+		-- Format string. First %d = pr_number; second %d = unresolved count on the buffer.
+		format = "[PR #%d · %d unresolved]",
+	},
 }
 
 function M.setup(opts)

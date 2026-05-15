@@ -77,6 +77,14 @@ return {
       -- Abort, default Abort). Set false to skip the refetch.
       enabled = true,
     },
+    winbar = {
+      -- Optional built-in winbar showing `[PR #1234 · N unresolved]` on
+      -- buffers under the PR's git root. Off by default — if you already
+      -- drive winbar with heirline / lualine, wire `require("pr").winbar()`
+      -- into your own setup instead of enabling this.
+      enabled = false,
+      format = "[PR #%d · %d unresolved]",
+    },
     -- Optional palette overrides. pr.nvim re-applies these on every
     -- ColorScheme event so a colorscheme switch no longer drops the colors.
     -- Note: definitions use `default = true`, so colorschemes that
@@ -324,6 +332,55 @@ The refetch costs one extra `gh api` call per submit; disable via `conflict_dete
 - Newlines in the title (insert-mode `<CR>` is bound to `<Nop>` so you can't insert them).
 
 Both empty-string cases produce a clear error notification; the edit popup stays open so you can fix and retry.
+
+## Statusline + winbar
+
+`require("pr").status()` returns a counters table you can wire into lualine, heirline, or the native statusline:
+
+```lua
+{
+  pr_number      = 1234,  -- nil when no PR is associated with the branch
+  total          = 12,    -- total cached threads
+  unresolved     = 7,
+  resolved       = 5,
+  outdated       = 2,
+  on_buffer      = 1,     -- (reserved; use compute_for_buffer for live values)
+  pending_review = 3,     -- comments queued under a draft review (S1c)
+}
+```
+
+Example lualine wiring:
+
+```lua
+lualine_x = {
+  function()
+    local s = require("pr").status()
+    if not s.pr_number then return "" end
+    return ("PR #%d %d↻"):format(s.pr_number, s.unresolved)
+  end,
+},
+```
+
+The function is cheap — it reads only in-memory cache, no network calls. Statusline plugins can subscribe to refresh events instead of polling:
+
+```lua
+vim.api.nvim_create_autocmd("User", {
+  pattern = { "PRCommentsRefreshed", "PRHunksRefreshed" },
+  callback = function() vim.cmd("redrawstatus") end,
+})
+```
+
+### Built-in winbar
+
+If you don't already drive winbar with a plugin, enable the built-in:
+
+```lua
+winbar = { enabled = true, format = "[PR #%d · %d unresolved]" }
+```
+
+The plugin installs a `BufWinEnter` autocmd that sets `vim.wo.winbar` on buffers under the PR's git root. It re-applies on `User PRCommentsRefreshed` so the unresolved counter stays accurate.
+
+`require("pr").winbar(bufnr)` returns the formatted string for any buffer (empty when no PR or when `winbar.enabled = false`).
 
 ## Commands
 

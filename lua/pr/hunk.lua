@@ -160,6 +160,8 @@ function M.refresh()
 				end
 			end
 		end
+
+		pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "PRHunksRefreshed" })
 	end))
 end
 

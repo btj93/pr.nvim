@@ -237,6 +237,48 @@ function M.setup(opts)
 		desc = "Dump PR threads to quickfix",
 	})
 
+	if config.opts.winbar and config.opts.winbar.enabled then
+		local group = vim.api.nvim_create_augroup("PRWinbar", { clear = true })
+		local function apply_winbar()
+			local prov = require("pr.provider").get_provider()
+			if not prov.git_root or prov.git_root == "" then
+				return
+			end
+			local bufname = vim.api.nvim_buf_get_name(0)
+			if bufname == "" or bufname:sub(1, #prov.git_root) ~= prov.git_root then
+				return
+			end
+			local w = require("pr.status").winbar(0)
+			if w ~= "" then
+				vim.wo.winbar = w
+			end
+		end
+		vim.api.nvim_create_autocmd("BufWinEnter", {
+			group = group,
+			callback = apply_winbar,
+		})
+		vim.api.nvim_create_autocmd("User", {
+			group = group,
+			pattern = "PRCommentsRefreshed",
+			callback = function()
+				-- Refresh winbar across all visible windows.
+				for _, win in ipairs(vim.api.nvim_list_wins()) do
+					local b = vim.api.nvim_win_get_buf(win)
+					vim.api.nvim_win_call(win, function()
+						local bufname = vim.api.nvim_buf_get_name(b)
+						local prov = require("pr.provider").get_provider()
+						if prov.git_root and prov.git_root ~= "" and bufname:sub(1, #prov.git_root) == prov.git_root then
+							local w = require("pr.status").winbar(b)
+							if w ~= "" then
+								vim.wo[win].winbar = w
+							end
+						end
+					end)
+				end
+			end,
+		})
+	end
+
 	if config.opts.auto_refresh and config.opts.auto_refresh.on_branch_change then
 		local group = vim.api.nvim_create_augroup("PRAutoRefresh", { clear = true })
 		vim.api.nvim_create_autocmd({ "FocusGained", "DirChanged" }, {
@@ -354,5 +396,11 @@ M.attach_hunk = hunk.attach
 M.toggle_hunks = hunk.toggle
 M.toggle_comments = comment.toggle
 M._check_branch_and_refresh = check_branch_and_refresh
+M.status = function()
+	return require("pr.status").compute()
+end
+M.winbar = function(bufnr)
+	return require("pr.status").winbar(bufnr)
+end
 
 return M
