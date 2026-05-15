@@ -97,6 +97,11 @@ M.opts = {
 		-- Format string. First %d = pr_number; second %d = unresolved count on the buffer.
 		format = "[PR #%d · %d unresolved]",
 	},
+	completion = {
+		-- Omnifunc-backed completion for @user and #issue inside comment popups.
+		-- Trigger with <C-x><C-o> in insert mode after typing `@` or `#`.
+		enabled = true,
+	},
 }
 
 function M.setup(opts)

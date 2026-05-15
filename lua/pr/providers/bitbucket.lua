@@ -1020,6 +1020,34 @@ function M.discard_pending_review(_review_id, callback)
 	end))
 end
 
+---@type { login: string, name: string? }[]|nil
+M.collaborators = nil
+
+---@type { number: integer, title: string, state: string }[]|nil
+M.issues = nil
+
+---@param callback fun(users: any[])
+function M.list_collaborators(callback)
+	if callback then
+		callback({})
+	end
+end
+
+---@param callback fun(issues: any[])
+function M.list_issues(callback)
+	if callback then
+		callback({})
+	end
+end
+
+function M.clear_collaborators()
+	M.collaborators = nil
+end
+
+function M.clear_issues()
+	M.issues = nil
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -1033,6 +1061,8 @@ function M.clear()
 	M.pr_metadata = nil
 	M.checks = nil
 	M.pending_review_id = nil
+	M.collaborators = nil
+	M.issues = nil
 end
 
 function M.clear_comments()

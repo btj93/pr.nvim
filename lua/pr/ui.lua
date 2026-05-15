@@ -323,6 +323,8 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 			wrap = true,
 			linebreak = true,
 			breakindent = true,
+			spell = false,
+			foldenable = false,
 		},
 		enter = enter or false,
 	})
@@ -450,9 +452,17 @@ local function make_new_reply_popup(enter, bottom_text)
 			wrap = true,
 			linebreak = true,
 			breakindent = true,
+			spell = false,
+			foldenable = false,
 		},
 		enter = enter,
 	})
+
+	-- Wire omnifunc for @user / #issue completion (S3b). Users trigger with
+	-- <C-x><C-o> in insert mode after typing @ or #.
+	if config.opts.completion and config.opts.completion.enabled ~= false then
+		vim.bo[reply_popup.bufnr].omnifunc = "v:lua.require'pr.completion'.omnifunc"
+	end
 
 	local buf_enter_event = { event.BufEnter }
 	if enter then
@@ -693,6 +703,8 @@ function M.make_comments_layout(thread, relative_path)
 			linebreak = true,
 			breakindent = true,
 			cursorline = true,
+			spell = false,
+			foldenable = false,
 		},
 		enter = true,
 	})

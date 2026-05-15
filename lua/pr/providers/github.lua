@@ -31,6 +31,12 @@ M.checks = nil
 ---@type integer?
 M.pending_review_id = nil
 
+---@type { login: string, name: string? }[]|nil
+M.collaborators = nil
+
+---@type { number: integer, title: string, state: string }[]|nil
+M.issues = nil
+
 ---@type ReactionPaletteEntry[]
 M.reaction_palette = {
 	{ content = "THUMBS_UP", glyph = "👍" },
@@ -272,6 +278,38 @@ function M._normalize_checks(raw)
 			duration_seconds = nil,
 			url = c.link or "",
 		})
+	end
+	return out
+end
+
+---@param raw table[]|nil  -- decoded JSON from `gh api /repos/:o/:r/collaborators`
+---@return { login: string, name: string? }[]
+function M._normalize_collaborators(raw)
+	local out = {}
+	for _, u in ipairs(raw or {}) do
+		if u.login then
+			local name = u.name
+			if name == vim.NIL then
+				name = nil
+			end
+			table.insert(out, { login = u.login, name = name })
+		end
+	end
+	return out
+end
+
+---@param raw table[]|nil  -- decoded JSON from `gh issue list --json ...` (or `gh pr list --json ...`)
+---@return { number: integer, title: string, state: string }[]
+function M._normalize_issues(raw)
+	local out = {}
+	for _, i in ipairs(raw or {}) do
+		if i.number then
+			table.insert(out, {
+				number = i.number,
+				title = i.title or "",
+				state = string.lower(i.state or "open"),
+			})
+		end
 	end
 	return out
 end
@@ -1609,6 +1647,94 @@ function M.discard_pending_review(review_id, callback)
 	end))
 end
 
+---@param callback fun(users: { login: string, name: string? }[])
+function M.list_collaborators(callback)
+	callback = callback or function(_) end
+	if M.collaborators then
+		return callback(M.collaborators)
+	end
+	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
+		if not owner or not repo then
+			return callback({})
+		end
+		Job:new({
+			command = "gh",
+			args = { "api", "/repos/" .. owner .. "/" .. repo .. "/collaborators", "--paginate" },
+			on_exit = vim.schedule_wrap(function(j, code)
+				if code ~= 0 then
+					return callback({})
+				end
+				local body = table.concat(j:result() or {}, "\n")
+				if body == "" then
+					M.collaborators = {}
+					return callback({})
+				end
+				local ok, raw = pcall(vim.fn.json_decode, body)
+				if not ok or type(raw) ~= "table" then
+					return callback({})
+				end
+				M.collaborators = M._normalize_collaborators(raw)
+				callback(M.collaborators)
+			end),
+		}):start()
+	end))
+end
+
+---@param callback fun(issues: { number: integer, title: string, state: string }[])
+function M.list_issues(callback)
+	callback = callback or function(_) end
+	if M.issues then
+		return callback(M.issues)
+	end
+	-- `gh issue list` only returns issues; `gh pr list` returns PRs.
+	-- For #N completion we want both, since GitHub uses the same number space.
+	-- Fetch issues first, then PRs, then merge.
+	Job:new({
+		command = "gh",
+		args = { "issue", "list", "--json", "number,title,state", "--limit", "200", "--state", "all" },
+		on_exit = vim.schedule_wrap(function(j, code)
+			local issues = {}
+			if code == 0 then
+				local body = table.concat(j:result() or {}, "\n")
+				if body ~= "" then
+					local ok, raw = pcall(vim.fn.json_decode, body)
+					if ok and type(raw) == "table" then
+						issues = M._normalize_issues(raw)
+					end
+				end
+			end
+			-- Now fetch PRs.
+			Job:new({
+				command = "gh",
+				args = { "pr", "list", "--json", "number,title,state", "--limit", "200", "--state", "all" },
+				on_exit = vim.schedule_wrap(function(j2, code2)
+					if code2 == 0 then
+						local body = table.concat(j2:result() or {}, "\n")
+						if body ~= "" then
+							local ok, raw = pcall(vim.fn.json_decode, body)
+							if ok and type(raw) == "table" then
+								for _, pr in ipairs(M._normalize_issues(raw)) do
+									table.insert(issues, pr)
+								end
+							end
+						end
+					end
+					M.issues = issues
+					callback(issues)
+				end),
+			}):start()
+		end),
+	}):start()
+end
+
+function M.clear_collaborators()
+	M.collaborators = nil
+end
+
+function M.clear_issues()
+	M.issues = nil
+end
+
 function M.clear()
 	M.comments = {}
 	M.hunks = {}
@@ -1621,6 +1747,8 @@ function M.clear()
 	M.pr_metadata = nil
 	M.checks = nil
 	M.pending_review_id = nil
+	M.collaborators = nil
+	M.issues = nil
 end
 
 function M.clear_comments()

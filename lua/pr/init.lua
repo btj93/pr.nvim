@@ -237,6 +237,28 @@ function M.setup(opts)
 		desc = "Dump PR threads to quickfix",
 	})
 
+	vim.api.nvim_create_user_command("PRRefreshUsers", function()
+		local g = provider.get_provider()
+		if type(g.clear_collaborators) == "function" then
+			g.clear_collaborators()
+		end
+		pcall(function()
+			require("pr.completion")._clear_collaborators()
+		end)
+		vim.notify("PR: collaborator cache cleared")
+	end, { desc = "Clear cached collaborators (forces re-fetch on next completion)" })
+
+	vim.api.nvim_create_user_command("PRRefreshIssues", function()
+		local g = provider.get_provider()
+		if type(g.clear_issues) == "function" then
+			g.clear_issues()
+		end
+		pcall(function()
+			require("pr.completion")._clear_issues()
+		end)
+		vim.notify("PR: issue cache cleared")
+	end, { desc = "Clear cached issues + PRs (forces re-fetch on next completion)" })
+
 	if config.opts.winbar and config.opts.winbar.enabled then
 		local group = vim.api.nvim_create_augroup("PRWinbar", { clear = true })
 		local function apply_winbar()

@@ -22,6 +22,8 @@
 --   M.pr_metadata      PRMetadata?                  cached PR metadata
 --   M.checks           CheckRun[]                   cached CI check runs
 --   M.pending_review_id        integer?|string?              cached pending-review identifier
+--   M.collaborators    { login: string, name: string? }[]?  cached collaborator list
+--   M.issues           { number: integer, title: string, state: string }[]?  cached issues + PRs
 --   M.reaction_palette ReactionPaletteEntry[]  addable reactions; empty array hides the emoji action
 --
 -- Functions (each callback fires on the main thread):
@@ -53,6 +55,9 @@
 --   list_review_comments(review_id, callback)                    -> callback(comments: PendingComment[])
 --   submit_review(review_id, event, body, callback)              -> callback(success: boolean, err: string?)
 --   discard_pending_review(review_id, callback)                  -> callback(success: boolean)
+--   list_collaborators(callback)                                 -> callback(users: { login: string, name: string? }[])
+--   list_issues(callback)                                        -> callback(issues: { number: integer, title: string, state: string }[])
+--   clear_collaborators() / clear_issues()
 --   clear_pr_metadata() / clear_checks() / clear_pending_review()
 --   clear() / clear_comments() / clear_hunks() / clear_pr_number() / clear_pr_list()
 --

@@ -85,6 +85,11 @@ return {
       enabled = false,
       format = "[PR #%d · %d unresolved]",
     },
+    completion = {
+      -- Omnifunc-backed @user / #issue completion inside comment popups.
+      -- Trigger with <C-x><C-o> in insert mode after typing @ or #.
+      enabled = true,
+    },
     -- Optional palette overrides. pr.nvim re-applies these on every
     -- ColorScheme event so a colorscheme switch no longer drops the colors.
     -- Note: definitions use `default = true`, so colorschemes that
@@ -382,6 +387,33 @@ The plugin installs a `BufWinEnter` autocmd that sets `vim.wo.winbar` on buffers
 
 `require("pr").winbar(bufnr)` returns the formatted string for any buffer (empty when no PR or when `winbar.enabled = false`).
 
+## Markdown popup + completion
+
+### Markdown rendering
+
+Comment popups (read-mode threads, edit-mode bodies, new-comment popups, and reply popups) set `filetype = markdown`, so treesitter (if installed) syntax-highlights fenced code blocks, headings, lists, and emphasis. Suggestion boxes, horizontal rules, and emoji rows render through as plain text — they don't conflict with markdown syntax.
+
+### @user / #issue completion
+
+Inside the new-comment or reply popup, type `@` or `#` and trigger Neovim's omnifunc with `<C-x><C-o>` (in insert mode):
+
+- `@<prefix>` — completes against the repo's collaborators. Menu shows the user's display name when available.
+- `#<prefix>` — completes against issues + PRs (GitHub uses one number space; the cache merges both). Menu shows the issue/PR title. An exact-prefix match (`#42` when `#42` exists) short-circuits to just that entry.
+
+The first trigger after a Neovim restart spawns an async `gh api` fetch and returns an empty list — press `<C-x><C-o>` again once the notification clears.
+
+Caches are long-lived because collaborators and issues change slowly. Invalidate explicitly:
+
+- `:PRRefreshUsers` — clear collaborator cache; next completion re-fetches.
+- `:PRRefreshIssues` — clear issue + PR cache; next completion re-fetches.
+
+Disable completion entirely via `completion = { enabled = false }`.
+
+### Provider parity
+
+- **GitHub** (`gh`): full support — fetches collaborators and issues/PRs.
+- **GitLab** / **Bitbucket Cloud**: stubs — completion returns empty lists. Real `glab` / Bitbucket REST equivalents are planned for a follow-up.
+
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
@@ -391,4 +423,6 @@ The plugin installs a `BufWinEnter` autocmd that sets `vim.wo.winbar` on buffers
 - `:PRReviewDiscard` — discard the current pending review without opening the layout.
 - `:PRSuggest` — open a new-comment popup with the visual selection wrapped as a ` ```suggestion ` block. Use from visual mode to author a suggested change for the lines under selection. See "Suggested edits" above.
 - `:PRQuickfix [unresolved|outdated|all|file]` — populate the quickfix list with PR threads (`unresolved` by default). Then `:cnext` / `:cprev` to navigate, `:cdo` / `:cfdo` for batch ops. See "Diagnostics + quickfix" below.
+- `:PRRefreshUsers` — clear the cached collaborator list (next `<C-x><C-o>` triggers a re-fetch).
+- `:PRRefreshIssues` — clear the cached issue + PR list.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.
