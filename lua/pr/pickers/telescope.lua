@@ -19,52 +19,60 @@ function M.pick_comments(opts)
 
 	opts = opts or {}
 
-	git.get_comments(vim.schedule_wrap(function(comments)
+	git.get_comments(vim.schedule_wrap(function(raw_comments)
+		-- Apply caller-side pre-filters ONCE; user-toggle filter applies per build.
+		local pre = raw_comments or {}
 		for _, f in ipairs(opts.filters or {}) do
-			comments = f(comments)
+			pre = f(pre)
 		end
-		comments = filter.apply(comments)
 
-		if next(comments) == nil then
+		if next(filter.apply(pre)) == nil then
 			vim.notify("No comments to pick")
 			return
 		end
 
-		local items = {}
-		for file, threads in pairs(comments) do
-			for _, thread in ipairs(threads) do
-				local _, first = next(thread.comments)
-				if first then
-					table.insert(items, {
-						value = {
-							file = file,
-							author = first.author,
-							body = first.body,
-							start_line = first.start_line,
-							end_line = first.end_line,
-						},
-						path = file,
-						lnum = first.start_line,
-						display = M.format_comments,
-						ordinal = first.author .. first.body .. file,
-					})
+		local function build_items()
+			local comments = filter.apply(pre)
+			local items = {}
+			for file, threads in pairs(comments) do
+				for _, thread in ipairs(threads) do
+					local _, first = next(thread.comments)
+					if first then
+						table.insert(items, {
+							value = {
+								file = file,
+								author = first.author,
+								body = first.body,
+								start_line = first.start_line,
+								end_line = first.end_line,
+							},
+							path = file,
+							lnum = first.start_line,
+							display = M.format_comments,
+							ordinal = first.author .. first.body .. file,
+						})
+					end
 				end
 			end
+			return items
+		end
+
+		local function new_finder()
+			return finders.new_table({
+				results = build_items(),
+				entry_maker = function(entry)
+					return entry
+				end,
+			})
 		end
 
 		pickers
 			.new({ previewer = true }, {
 				prompt_title = filter.label() .. "PR Comments",
-				finder = finders.new_table({
-					results = items,
-					entry_maker = function(entry)
-						return entry
-					end,
-				}),
+				finder = new_finder(),
 				sorter = sorters.get_generic_fuzzy_sorter(),
 				previewer = require("telescope.config").values.grep_previewer({ preview = true }),
 				attach_mappings = function(prompt_bufnr, map)
-					-- This action runs when you press <CR> on an item
 					actions.select_default:replace(function()
 						local selection = action_state.get_selected_entry()
 						actions.close(prompt_bufnr)
@@ -74,18 +82,21 @@ function M.pick_comments(opts)
 							require("pr.util").open_pr_file(abs, rel, { line = selection.value.start_line })
 						end
 					end)
-					local toggle_resolved = function()
-						filter.toggle("resolved")
-						actions.close(prompt_bufnr)
-						require("pr.picker").pick_comments()
+					-- Toggle filter state then refresh the picker in place.
+					-- No re-fetch — filter.apply runs over the cached comments.
+					local function toggle(kind)
+						filter.toggle(kind)
+						local picker = action_state.get_current_picker(prompt_bufnr)
+						if picker then
+							picker:refresh(new_finder(), { reset_prompt = false })
+						end
 					end
-					local toggle_outdated = function()
-						filter.toggle("outdated")
-						actions.close(prompt_bufnr)
-						require("pr.picker").pick_comments()
+					local function toggle_resolved()
+						toggle("resolved")
 					end
-					-- Bind in both normal and insert mode so users typing in the filter prompt
-					-- can also toggle without hitting <Esc> first.
+					local function toggle_outdated()
+						toggle("outdated")
+					end
 					map("n", "R", toggle_resolved)
 					map("i", "<C-r>", toggle_resolved)
 					map("n", "O", toggle_outdated)
@@ -276,6 +287,39 @@ function M.pick_prs(opts)
 		filter.set_pr_filter(opts.filter)
 	end
 
+	-- Shared upvalue so the cycle action can swap in a new list without
+	-- closing/re-opening the picker.
+	local state = { prs = {} }
+
+	local function build_items()
+		local items = {}
+		for _, pr in ipairs(state.prs) do
+			local display = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
+			table.insert(items, {
+				value = {
+					number = pr.number,
+					title = pr.title or "",
+					author = pr.author or "",
+					state = pr.state or "",
+					branch = pr.branch or "",
+					url = pr.url or "",
+				},
+				display = display,
+				ordinal = tostring(pr.number) .. " " .. (pr.title or "") .. " " .. (pr.author or ""),
+			})
+		end
+		return items
+	end
+
+	local function new_finder()
+		return finders.new_table({
+			results = build_items(),
+			entry_maker = function(entry)
+				return entry
+			end,
+		})
+	end
+
 	git.list_prs(
 		filter.state.pr_list_filter,
 		vim.schedule_wrap(function(prs)
@@ -283,33 +327,12 @@ function M.pick_prs(opts)
 				vim.notify("No PRs to list (filter: " .. filter.state.pr_list_filter .. ")")
 				return
 			end
-
-			local items = {}
-			for _, pr in ipairs(prs) do
-				local display = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
-				table.insert(items, {
-					value = {
-						number = pr.number,
-						title = pr.title or "",
-						author = pr.author or "",
-						state = pr.state or "",
-						branch = pr.branch or "",
-						url = pr.url or "",
-					},
-					display = display,
-					ordinal = tostring(pr.number) .. " " .. (pr.title or "") .. " " .. (pr.author or ""),
-				})
-			end
+			state.prs = prs
 
 			pickers
 				.new({}, {
 					prompt_title = filter.pr_list_label() .. "PRs",
-					finder = finders.new_table({
-						results = items,
-						entry_maker = function(entry)
-							return entry
-						end,
-					}),
+					finder = new_finder(),
 					sorter = sorters.get_generic_fuzzy_sorter(),
 					attach_mappings = function(prompt_bufnr, map)
 						actions.select_default:replace(function()
@@ -326,10 +349,21 @@ function M.pick_prs(opts)
 							pr_list.checkout(selection.value.number)
 						end)
 
+						-- Cycle filter then refresh in place. list_prs is cached per
+						-- filter on the provider; first cycle to a new filter triggers
+						-- one network call, subsequent cycles hit the cache.
 						local cycle = function()
 							filter.cycle_pr_filter()
-							actions.close(prompt_bufnr)
-							M.pick_prs()
+							git.list_prs(
+								filter.state.pr_list_filter,
+								vim.schedule_wrap(function(new_prs)
+									state.prs = new_prs or {}
+									local picker = action_state.get_current_picker(prompt_bufnr)
+									if picker then
+										picker:refresh(new_finder(), { reset_prompt = false })
+									end
+								end)
+							)
 						end
 						map("i", "<C-f>", cycle)
 						map("n", "<C-f>", cycle)

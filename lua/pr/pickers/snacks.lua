@@ -25,33 +25,57 @@ function M.pick_comments(opts)
 
 	local format = opts.format or M.format_comments
 
-	git.get_comments(vim.schedule_wrap(function(comments)
+	git.get_comments(vim.schedule_wrap(function(raw_comments)
+		-- Apply caller-side pre-filters ONCE; the user-toggle filter applies
+		-- on every finder run so it can change without a re-fetch.
+		local pre = raw_comments or {}
 		for _, f in ipairs(opts.filters or {}) do
-			comments = f(comments)
+			pre = f(pre)
 		end
-		comments = filter.apply(comments)
 
-		if next(comments) == nil then
+		-- If the initial visible set is empty (with current filter state), bail.
+		if next(filter.apply(pre)) == nil then
 			vim.notify("No comments to pick")
 			return
 		end
 
+		--- Build the picker items from `pre` with the latest filter state.
+		---@return snacks.picker.finder.Item[]
+		local function build_items()
+			local comments = filter.apply(pre)
+			local items = {}
+			for file, threads in pairs(comments) do
+				for _, thread in ipairs(threads) do
+					local _, first = next(thread.comments)
+					if first then
+						table.insert(items, {
+							file = file,
+							["data"] = {
+								["author"] = first.author,
+								["body"] = first.body,
+							},
+							text = first.author .. first.body .. file,
+							pos = { first.start_line, 0 },
+							end_pos = { first.end_line, 0 },
+						})
+					end
+				end
+			end
+			return items
+		end
+
 		return Snacks.picker({
 			title = filter.label() .. "PR Comments",
-			-- Snacks expects keys under win.input.keys / win.list.keys, referencing
-			-- string action names defined in `actions = {...}`. R / O are plain
-			-- letters that would type in insert mode, so we bind them in normal
-			-- mode only.
+			-- Toggle filter state then re-run the finder in place via picker:find().
+			-- No re-fetch — filter is purely client-side over the cached comments.
 			actions = {
 				toggle_resolved = function(picker)
 					filter.toggle("resolved")
-					picker:close()
-					require("pr.picker").pick_comments()
+					picker:find()
 				end,
 				toggle_outdated = function(picker)
 					filter.toggle("outdated")
-					picker:close()
-					require("pr.picker").pick_comments()
+					picker:find()
 				end,
 			},
 			win = {
@@ -69,28 +93,7 @@ function M.pick_comments(opts)
 				},
 			},
 			---@return snacks.picker.finder.Item[]
-			finder = function()
-				local items = {}
-				for file, threads in pairs(comments) do
-					for _, thread in ipairs(threads) do
-						local _, first = next(thread.comments)
-						if first then
-							table.insert(items, {
-								file = file,
-								["data"] = {
-									["author"] = first.author,
-									["body"] = first.body,
-								},
-								text = first.author .. first.body .. file,
-								pos = { first.start_line, 0 },
-								end_pos = { first.end_line, 0 },
-							})
-						end
-					end
-				end
-
-				return items
-			end,
+			finder = build_items,
 			-- layout = {
 			-- 	layout = {
 			-- 		box = "horizontal",
@@ -308,6 +311,29 @@ function M.pick_prs(opts)
 		filter.set_pr_filter(opts.filter)
 	end
 
+	-- Mutable upvalue so the cycle action can swap in a new list and re-trigger
+	-- the finder without closing/re-opening the picker.
+	local state = { prs = {} }
+
+	---@return snacks.picker.finder.Item[]
+	local function build_items()
+		local items = {}
+		for _, pr in ipairs(state.prs) do
+			table.insert(items, {
+				text = string.format("#%d %s %s", pr.number, pr.title or "", pr.author or ""),
+				data = {
+					number = pr.number,
+					title = pr.title or "",
+					author = pr.author or "",
+					state = pr.state or "",
+					branch = pr.branch or "",
+					url = pr.url or "",
+				},
+			})
+		end
+		return items
+	end
+
 	git.list_prs(
 		filter.state.pr_list_filter,
 		vim.schedule_wrap(function(prs)
@@ -315,18 +341,23 @@ function M.pick_prs(opts)
 				vim.notify("No PRs to list (filter: " .. filter.state.pr_list_filter .. ")")
 				return
 			end
+			state.prs = prs
 
 			return Snacks.picker({
 				title = filter.pr_list_label() .. "PRs",
-				-- Snacks expects keys under win.input.keys (or win.list.keys), referencing
-				-- a string action name defined in `actions = {...}`. The default picker
-				-- focus is the input prompt (insert mode), so non-letter keys like <c-f>
-				-- need `mode = { "n", "i" }` to fire while the user is typing.
 				actions = {
 					pr_cycle_filter = function(picker)
 						filter.cycle_pr_filter()
-						picker:close()
-						M.pick_prs()
+						-- list_prs is cached per filter on the provider — first cycle
+						-- to a new filter triggers one network call, subsequent cycles
+						-- hit the cache. The picker stays open; the finder re-runs.
+						git.list_prs(
+							filter.state.pr_list_filter,
+							vim.schedule_wrap(function(new_prs)
+								state.prs = new_prs or {}
+								picker:find()
+							end)
+						)
 					end,
 				},
 				win = {
@@ -342,23 +373,7 @@ function M.pick_prs(opts)
 					},
 				},
 				---@return snacks.picker.finder.Item[]
-				finder = function()
-					local items = {}
-					for _, pr in ipairs(prs) do
-						table.insert(items, {
-							text = string.format("#%d %s %s", pr.number, pr.title or "", pr.author or ""),
-							data = {
-								number = pr.number,
-								title = pr.title or "",
-								author = pr.author or "",
-								state = pr.state or "",
-								branch = pr.branch or "",
-								url = pr.url or "",
-							},
-						})
-					end
-					return items
-				end,
+				finder = build_items,
 				format = M.format_prs,
 				confirm = function(picker, item)
 					picker:close()
