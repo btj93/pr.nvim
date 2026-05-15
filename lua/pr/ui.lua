@@ -2223,7 +2223,7 @@ M.actions = {
 		menu_text = "Yank thread URL",
 		menu_desc = "Copy a permalink to this comment to the clipboard",
 		popup_hint = "[yl] yank URL",
-		show_hint = true,
+		show_hint = false,
 		can_perform = function(_, comment)
 			return comment ~= nil and type(git.thread_url) == "function"
 		end,
@@ -2236,6 +2236,35 @@ M.actions = {
 			vim.fn.setreg("+", url)
 			vim.fn.setreg('"', url)
 			vim.notify("Yanked: " .. url)
+		end,
+	},
+	open_url = {
+		mode = "n",
+		key = "gx",
+		menu_text = "Open thread in browser",
+		menu_desc = "Open this comment's permalink in the system browser",
+		popup_hint = "[gx] open in browser",
+		show_hint = false,
+		can_perform = function(_, comment)
+			return comment ~= nil and type(git.thread_url) == "function"
+		end,
+		perform = function(thread, comment, _, _)
+			local url = git.thread_url(thread, comment)
+			if not url or url == "" then
+				vim.notify("Permalink unavailable for this thread")
+				return
+			end
+			-- vim.ui.open exists on Neovim >= 0.10. On older versions the pcall
+			-- catches the nil-call and we report a useful error instead of
+			-- crashing the popup.
+			if type(vim.ui.open) ~= "function" then
+				vim.notify("vim.ui.open unavailable (requires Neovim 0.10+)", vim.log.levels.ERROR)
+				return
+			end
+			local ok, err = pcall(vim.ui.open, url)
+			if not ok then
+				vim.notify("Failed to open: " .. tostring(err), vim.log.levels.ERROR)
+			end
 		end,
 	},
 	apply_suggestion = {

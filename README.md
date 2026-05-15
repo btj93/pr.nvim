@@ -195,6 +195,7 @@ Once you open a thread (e.g. via `<leader>gp`), these keymaps are available on t
 - `ya` — yank the suggestion content to the system clipboard (only when the comment contains a ` ```suggestion ` block).
 - `<M-d>` — delete the comment (if you authored it).
 - `yl` — yank the thread's web URL to the clipboard (works on github / gitlab / bitbucket).
+- `gx` — open the thread in the system browser (uses `vim.ui.open`; requires Neovim 0.10+). Useful for content the plugin can't render — e.g. Copilot's "Suggested changeset" autofixes, which aren't exposed via the GitHub API.
 - `q` — close the comments popup.
 - `?` — open the keymap help menu showing every available action, including ones with no direct binding (like `edit`).
 
