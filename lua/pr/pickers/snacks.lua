@@ -38,22 +38,34 @@ function M.pick_comments(opts)
 
 		return Snacks.picker({
 			title = filter.label() .. "PR Comments",
-			keys = {
-				["R"] = {
-					function(picker)
-						filter.toggle("resolved")
-						picker:close()
-						require("pr.picker").pick_comments()
-					end,
-					desc = "Toggle resolved threads",
+			-- Snacks expects keys under win.input.keys / win.list.keys, referencing
+			-- string action names defined in `actions = {...}`. R / O are plain
+			-- letters that would type in insert mode, so we bind them in normal
+			-- mode only.
+			actions = {
+				toggle_resolved = function(picker)
+					filter.toggle("resolved")
+					picker:close()
+					require("pr.picker").pick_comments()
+				end,
+				toggle_outdated = function(picker)
+					filter.toggle("outdated")
+					picker:close()
+					require("pr.picker").pick_comments()
+				end,
+			},
+			win = {
+				input = {
+					keys = {
+						["R"] = { "toggle_resolved", mode = "n", desc = "Toggle resolved threads" },
+						["O"] = { "toggle_outdated", mode = "n", desc = "Toggle outdated threads" },
+					},
 				},
-				["O"] = {
-					function(picker)
-						filter.toggle("outdated")
-						picker:close()
-						require("pr.picker").pick_comments()
-					end,
-					desc = "Toggle outdated threads",
+				list = {
+					keys = {
+						["R"] = { "toggle_resolved", mode = "n", desc = "Toggle resolved threads" },
+						["O"] = { "toggle_outdated", mode = "n", desc = "Toggle outdated threads" },
+					},
 				},
 			},
 			---@return snacks.picker.finder.Item[]
