@@ -306,14 +306,27 @@ function M.pick_prs(opts)
 
 			return Snacks.picker({
 				title = filter.pr_list_label() .. "PRs",
-				keys = {
-					["<C-f>"] = {
-						function(picker)
-							filter.cycle_pr_filter()
-							picker:close()
-							M.pick_prs()
-						end,
-						desc = "Cycle PR filter",
+				-- Snacks expects keys under win.input.keys (or win.list.keys), referencing
+				-- a string action name defined in `actions = {...}`. The default picker
+				-- focus is the input prompt (insert mode), so non-letter keys like <c-f>
+				-- need `mode = { "n", "i" }` to fire while the user is typing.
+				actions = {
+					pr_cycle_filter = function(picker)
+						filter.cycle_pr_filter()
+						picker:close()
+						M.pick_prs()
+					end,
+				},
+				win = {
+					input = {
+						keys = {
+							["<c-f>"] = { "pr_cycle_filter", mode = { "n", "i" }, desc = "Cycle PR filter" },
+						},
+					},
+					list = {
+						keys = {
+							["<c-f>"] = { "pr_cycle_filter", mode = { "n", "i" }, desc = "Cycle PR filter" },
+						},
 					},
 				},
 				---@return snacks.picker.finder.Item[]
