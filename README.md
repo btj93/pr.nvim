@@ -202,10 +202,17 @@ Editing an existing comment is reached from the `?` menu (the `edit` action has 
 
 ## Picking PRs
 
-`:PRList` (or `require("pr.picker").pick_prs()`) opens the configured picker over your open PRs. The picker title shows the active filter; cycle filters in place:
+`:PRList` (or `require("pr.picker").pick_prs()`) opens the configured picker over your open PRs. The default filter is `all`; the picker title shows the active filter.
 
-- **snacks / telescope** — `<Tab>` cycles `mine → assigned → review-requested → all`. Telescope binds `<Tab>` in both insert and normal mode.
-- **fzf-lua** — `<C-t>` cycles (fzf-lua reserves `<Tab>` for multi-select).
+### Picking the initial filter
+
+- `:PRList` — opens with the current filter (defaults to `all`).
+- `:PRList mine` / `:PRList assigned` / `:PRList review-requested` / `:PRList all` — open with that filter (tab-completed).
+- `require("pr.picker").pick_prs({ filter = "mine" })` — same, programmatically.
+
+### Cycling the filter while the picker is open
+
+`<C-f>` cycles `mine → assigned → review-requested → all → mine` across all three pickers (snacks, telescope, fzf-lua). The picker rebuilds with the new filter and the title prefix updates.
 
 `<CR>` checks out the chosen PR via `gh pr checkout` (github) or the equivalent provider call. Open buffers automatically reload on the branch switch, and PR comments/hunks refresh.
 

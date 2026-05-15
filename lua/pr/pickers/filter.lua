@@ -4,18 +4,30 @@
 local M = {}
 
 local PR_FILTERS = { "mine", "assigned", "review-requested", "all" }
+M.PR_FILTERS = PR_FILTERS -- exposed for command-completion / external consumers
 
 M.state = {
 	show_resolved = true,
 	show_outdated = true,
-	pr_list_filter = "mine",
+	pr_list_filter = "all",
 }
 
 --- Reset filter state to defaults. Called by M.refresh paths.
 function M.reset()
 	M.state.show_resolved = true
 	M.state.show_outdated = true
-	M.state.pr_list_filter = "mine"
+	M.state.pr_list_filter = "all"
+end
+
+--- Set the PR-list filter to a specific kind. Ignores unknown values.
+---@param kind string
+function M.set_pr_filter(kind)
+	for _, v in ipairs(PR_FILTERS) do
+		if v == kind then
+			M.state.pr_list_filter = kind
+			return
+		end
+	end
 end
 
 --- Toggle the visibility of a thread category.

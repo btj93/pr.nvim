@@ -284,14 +284,17 @@ function M.format_hunks(item, _)
 	return ret
 end
 
----
+---@param opts? { filter?: "mine"|"assigned"|"review-requested"|"all" }
 ---@return nil
-function M.pick_prs()
+function M.pick_prs(opts)
 	if not Snacks then
 		vim.notify("snacks.nvim not installed; configure a different picker or install snacks", vim.log.levels.WARN)
 		return
 	end
 	local filter = require("pr.pickers.filter")
+	if opts and opts.filter then
+		filter.set_pr_filter(opts.filter)
+	end
 
 	git.list_prs(
 		filter.state.pr_list_filter,
@@ -304,7 +307,7 @@ function M.pick_prs()
 			return Snacks.picker({
 				title = filter.pr_list_label() .. "PRs",
 				keys = {
-					["<Tab>"] = {
+					["<C-f>"] = {
 						function(picker)
 							filter.cycle_pr_filter()
 							picker:close()

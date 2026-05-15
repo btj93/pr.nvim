@@ -258,9 +258,9 @@ function M.format_hunks(entry)
 	return string.format("%s %-80s %s:%s", icon or " ", entry.value.file, entry.value.hunk_start, entry.value.hunk_end)
 end
 
----
+---@param opts? { filter?: "mine"|"assigned"|"review-requested"|"all" }
 ---@return nil
-function M.pick_prs()
+function M.pick_prs(opts)
 	local ok_t, _ = pcall(require, "telescope")
 	if not ok_t then
 		vim.notify("telescope.nvim not installed", vim.log.levels.WARN)
@@ -272,6 +272,9 @@ function M.pick_prs()
 	local actions = require("telescope.actions")
 	local action_state = require("telescope.actions.state")
 	local filter = require("pr.pickers.filter")
+	if opts and opts.filter then
+		filter.set_pr_filter(opts.filter)
+	end
 
 	git.list_prs(
 		filter.state.pr_list_filter,
@@ -328,8 +331,8 @@ function M.pick_prs()
 							actions.close(prompt_bufnr)
 							M.pick_prs()
 						end
-						map("i", "<Tab>", cycle)
-						map("n", "<Tab>", cycle)
+						map("i", "<C-f>", cycle)
+						map("n", "<C-f>", cycle)
 						return true
 					end,
 				})

@@ -149,15 +149,18 @@ function M.outdated(comments)
 	return c
 end
 
----
+---@param opts? { filter?: "mine"|"assigned"|"review-requested"|"all" }
 ---@return nil
-function M.pick_prs()
+function M.pick_prs(opts)
 	local ok, fzf = pcall(require, "fzf-lua")
 	if not ok then
 		vim.notify("fzf-lua not installed", vim.log.levels.WARN)
 		return
 	end
 	local filter = require("pr.pickers.filter")
+	if opts and opts.filter then
+		filter.set_pr_filter(opts.filter)
+	end
 
 	git.list_prs(
 		filter.state.pr_list_filter,
@@ -195,7 +198,7 @@ function M.pick_prs()
 						end
 						pr_list.checkout(pr.number)
 					end,
-					["ctrl-t"] = function()
+					["ctrl-f"] = function()
 						filter.cycle_pr_filter()
 						M.pick_prs()
 					end,

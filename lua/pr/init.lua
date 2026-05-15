@@ -194,9 +194,19 @@ function M.setup(opts)
 		M.refresh()
 	end, { desc = "Refresh PR comments and hunks" })
 
-	vim.api.nvim_create_user_command("PRList", function()
-		require("pr.picker").pick_prs()
-	end, { desc = "List PRs and switch into one" })
+	vim.api.nvim_create_user_command("PRList", function(arg)
+		local opts = nil
+		if arg.args and arg.args ~= "" then
+			opts = { filter = arg.args }
+		end
+		require("pr.picker").pick_prs(opts)
+	end, {
+		nargs = "?",
+		complete = function()
+			return require("pr.pickers.filter").PR_FILTERS
+		end,
+		desc = "List PRs [mine|assigned|review-requested|all] and switch into one",
+	})
 
 	vim.api.nvim_create_user_command("PRInfo", function(arg)
 		require("pr.pr_info").show(arg.args == "edit" and "edit" or "view")
