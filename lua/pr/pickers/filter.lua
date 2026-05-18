@@ -6,16 +6,20 @@ local M = {}
 local PR_FILTERS = { "mine", "assigned", "review-requested", "all" }
 M.PR_FILTERS = PR_FILTERS -- exposed for command-completion / external consumers
 
+-- Defaults match the inline rendering knobs (`show_resolved_inline` /
+-- `show_outdated_inline` in config.lua, both `false`) so the picker
+-- surfaces actionable threads first. Toggle via `R`/`O` (snacks, telescope)
+-- or `<C-r>`/`<C-o>` (fzf).
 M.state = {
-	show_resolved = true,
-	show_outdated = true,
+	show_resolved = false,
+	show_outdated = false,
 	pr_list_filter = "all",
 }
 
 --- Reset filter state to defaults. Called by M.refresh paths.
 function M.reset()
-	M.state.show_resolved = true
-	M.state.show_outdated = true
+	M.state.show_resolved = false
+	M.state.show_outdated = false
 	M.state.pr_list_filter = "all"
 end
 
@@ -103,6 +107,24 @@ end
 ---@return string
 function M.pr_list_label()
 	return "[" .. M.state.pr_list_filter .. "] "
+end
+
+--- Single-cell state indicator for a thread, used by all three pickers'
+--- `format_comments` so resolved / outdated / active rows are visually
+--- distinguishable when the filters allow them through.
+--- Returns `{ glyph, hl }` — the glyph is a single display cell so column
+--- alignment downstream stays predictable.
+---@param thread { is_resolved?: boolean, is_outdated?: boolean }
+---@return string glyph
+---@return string highlight_group
+function M.state_glyph(thread)
+	if thread and thread.is_resolved then
+		return "✓", "Comment"
+	end
+	if thread and thread.is_outdated then
+		return "~", "DiagnosticHint"
+	end
+	return "·", "NonText"
 end
 
 return M

@@ -37,8 +37,9 @@ function M.pick_comments(opts)
 						if #body > 60 then
 							body = body:sub(1, 60) .. "…"
 						end
+						local glyph = filter.state_glyph(thread)
 						-- "file:line:col:text" — recognized by fzf-lua's builtin previewer
-						local entry = string.format("%s:%d:1:%s: %s", file, first.start_line, first.author, body)
+						local entry = string.format("%s:%d:1:%s %s: %s", file, first.start_line, glyph, first.author, body)
 						table.insert(entries, entry)
 					end
 				end

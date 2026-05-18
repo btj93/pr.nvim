@@ -44,6 +44,8 @@ function M.pick_comments(opts)
 								body = first.body,
 								start_line = first.start_line,
 								end_line = first.end_line,
+								is_resolved = thread.is_resolved,
+								is_outdated = thread.is_outdated,
 							},
 							path = file,
 							lnum = first.start_line,
@@ -191,7 +193,8 @@ function M.format_comments(entry)
 	-- Assumes you have 'nvim-web-devicons' installed
 	local icon, _ = require("nvim-web-devicons").get_icon(entry.value.file)
 	local body_truncated = entry.value.body:gsub("\n", " "):sub(1, 40)
-	return string.format("%s %-15s %-40s %s", icon or " ", entry.value.author, body_truncated, entry.value.file)
+	local glyph = require("pr.pickers.filter").state_glyph(entry.value)
+	return string.format("%s %s %-15s %-40s %s", glyph, icon or " ", entry.value.author, body_truncated, entry.value.file)
 end
 
 ---

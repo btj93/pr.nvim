@@ -1,5 +1,6 @@
 local M = {}
 local git = require("pr.provider").get_provider()
+local filter = require("pr.pickers.filter")
 
 local function safe_require(mod)
 	local ok, m = pcall(require, mod)
@@ -19,7 +20,6 @@ function M.pick_comments(opts)
 		vim.notify("snacks.nvim not installed; configure a different picker or install snacks", vim.log.levels.WARN)
 		return
 	end
-	local filter = require("pr.pickers.filter")
 
 	opts = opts or {}
 
@@ -53,6 +53,8 @@ function M.pick_comments(opts)
 							["data"] = {
 								["author"] = first.author,
 								["body"] = first.body,
+								["is_resolved"] = thread.is_resolved,
+								["is_outdated"] = thread.is_outdated,
 							},
 							text = first.author .. first.body .. file,
 							pos = { first.start_line, 0 },
@@ -83,12 +85,19 @@ function M.pick_comments(opts)
 					keys = {
 						["R"] = { "toggle_resolved", mode = "n", desc = "Toggle resolved threads" },
 						["O"] = { "toggle_outdated", mode = "n", desc = "Toggle outdated threads" },
+						-- <C-r>/<C-o> alias matches fzf-lua and telescope so muscle memory
+						-- carries across pickers. Bound in both insert and normal so
+						-- they work while typing the filter prompt.
+						["<C-r>"] = { "toggle_resolved", mode = { "i", "n" }, desc = "Toggle resolved threads" },
+						["<C-o>"] = { "toggle_outdated", mode = { "i", "n" }, desc = "Toggle outdated threads" },
 					},
 				},
 				list = {
 					keys = {
 						["R"] = { "toggle_resolved", mode = "n", desc = "Toggle resolved threads" },
 						["O"] = { "toggle_outdated", mode = "n", desc = "Toggle outdated threads" },
+						["<C-r>"] = { "toggle_resolved", mode = "n", desc = "Toggle resolved threads" },
+						["<C-o>"] = { "toggle_outdated", mode = "n", desc = "Toggle outdated threads" },
 					},
 				},
 			},
@@ -206,6 +215,9 @@ function M.format_comments(item, _)
 	local ret = {}
 	local a = Snacks.picker.util.align
 	local icon, icon_hl = Snacks.util.icon(item.file.ft)
+	local glyph, glyph_hl = filter.state_glyph(item.data)
+	ret[#ret + 1] = { glyph, glyph_hl }
+	ret[#ret + 1] = { " " }
 	ret[#ret + 1] = { a(icon, 3), icon_hl }
 	ret[#ret + 1] = { " " }
 	ret[#ret + 1] = { a(item.data.author, 15), "@variable.builtin" }
@@ -306,7 +318,6 @@ function M.pick_prs(opts)
 		vim.notify("snacks.nvim not installed; configure a different picker or install snacks", vim.log.levels.WARN)
 		return
 	end
-	local filter = require("pr.pickers.filter")
 	if opts and opts.filter then
 		filter.set_pr_filter(opts.filter)
 	end
