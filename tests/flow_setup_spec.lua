@@ -323,6 +323,51 @@ describe("flow: plugin/pr.lua entry (auto-setup)", function()
 		pr.setup = orig_setup
 	end)
 
+	it("sourcing plugin/pr.lua AFTER setup() does not clobber the real commands", function()
+		-- Native pack / manual rtp ordering: the user's init.lua calls setup()
+		-- FIRST, then Neovim sources plugin/pr.lua. The stubs must not overwrite
+		-- the real commands (which carry completion + strict arg specs).
+		del_all_commands()
+		vim.g.loaded_pr = nil
+
+		local pr = require("pr")
+		pr.setup({ run_on_start = { comments = false, hunks = false }, auto_refresh = SAFE_AUTO })
+
+		-- Belt 1: setup() itself claims the load guard so a later plugin source
+		-- no-ops outright.
+		assert.is_not_nil(vim.g.loaded_pr, "setup() should set vim.g.loaded_pr")
+
+		local function assert_real_commands(label)
+			local cmds = vim.api.nvim_get_commands({})
+			assert.equals("?", cmds.PRList.nargs, label .. ": PRList nargs should stay '?' (stub uses '*')")
+			assert.is_not_nil(cmds.PRList.complete, label .. ": PRList completion should survive (stubs have none)")
+			assert.equals("?", cmds.PRQuickfix.nargs, label .. ": PRQuickfix nargs should stay '?'")
+		end
+		assert_real_commands("after setup")
+
+		dofile(PLUGIN_ROOT .. "/plugin/pr.lua")
+		assert_real_commands("after post-setup plugin source")
+
+		-- Belt 2: even with the flag lost (exotic ordering — setup ran but
+		-- vim.g.loaded_pr is unset), the plugin file must detect the existing real
+		-- commands and skip stub registration.
+		vim.g.loaded_pr = nil
+		dofile(PLUGIN_ROOT .. "/plugin/pr.lua")
+		assert_real_commands("after flag-less plugin source")
+
+		-- Invoking a command goes through the real implementation, not a stub:
+		-- stubs (and only stubs) route through _ensure_setup.
+		local ensure_calls = 0
+		local orig_ensure = pr._ensure_setup
+		pr._ensure_setup = function(...)
+			ensure_calls = ensure_calls + 1
+			return orig_ensure(...)
+		end
+		vim.cmd("PRRefresh")
+		pr._ensure_setup = orig_ensure
+		assert.equals(0, ensure_calls, "invocation must not route through a bootstrap stub")
+	end)
+
 	it("explicit setup() after auto-setup re-merges config without erroring or double-registering", function()
 		-- Trigger auto-setup via a command (defaults; fake provider absorbs it).
 		vim.cmd("PRRefresh")

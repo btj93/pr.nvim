@@ -27,6 +27,14 @@ if vim.g.loaded_pr then
 end
 vim.g.loaded_pr = 1
 
+-- Second belt against clobbering: M.setup() sets vim.g.loaded_pr itself, but if
+-- setup somehow ran without the flag (exotic orderings), the real commands
+-- already exist — overwriting them with stubs would permanently lose their
+-- completion and strict arg specs, so skip registration entirely.
+if vim.fn.exists(":PRRefresh") == 2 then
+	return
+end
+
 local commands = {
 	"PRRefresh",
 	"PRComment",
@@ -40,6 +48,8 @@ local commands = {
 	"PRRefreshIssues",
 }
 
+-- Trade-off: until the FIRST invocation, these stubs offer no arg completion and
+-- accept any args/range/bang (the real strict specs take over from then on).
 for _, name in ipairs(commands) do
 	vim.api.nvim_create_user_command(name, function(a)
 		local pr = require("pr")

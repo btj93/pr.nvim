@@ -322,6 +322,10 @@ end
 -- A single setup function for signs and highlights
 function M.setup(opts)
 	did_setup = true
+	-- Claim the plugin load guard too: in Neovim's standard startup, plugin/pr.lua
+	-- sources AFTER the user's init.lua, so when setup() ran there the plugin file
+	-- must no-op instead of overwriting these real commands with bootstrap stubs.
+	vim.g.loaded_pr = 1
 	config.setup(opts)
 
 	-- vim.fn.sign_define(sign_add, { text = "+", texthl = "DiffAdd" })
