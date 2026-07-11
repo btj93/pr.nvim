@@ -1,8 +1,12 @@
 # PR.nvim
 
+[![CI](https://github.com/btj93/pr.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/btj93/pr.nvim/actions/workflows/ci.yml)
+
 PR.nvim is a Neovim plugin that surfaces pull-request review comments and diff hunks inline in your buffers, with floating-window UI for reading and replying to threads. Supports GitHub, GitLab, and Bitbucket Cloud.
 
 ## Requirements
+
+**Requires Neovim 0.10+** — the plugin relies on 0.10 APIs and `:checkhealth pr` enforces the floor. **0.11+ is recommended** for the below-the-line virtual-lines inline display (`vim.diagnostic.config({ virtual_lines = true })`); on 0.10 use `virtual_text` or install [`lsp_lines.nvim`](https://git.sr.ht/~whynothugo/lsp_lines.nvim) for the multi-line view.
 
 ### Neovim plugins (runtime)
 
@@ -48,6 +52,30 @@ return {
   opts = {
     provider = "github", -- "github" | "gitlab" | "bitbucket"
     picker = "snacks", -- "snacks" | "telescope" | "fzf"
+    -- What to turn on automatically when a buffer under a PR's git root opens.
+    -- Comments (signs + inline threads) on by default; diff-hunk line
+    -- backgrounds off by default.
+    run_on_start = {
+      comments = true,
+      hunks = false,
+    },
+    -- Signcolumn glyphs. `sign` marks single-line threads; `multi_line_sign`
+    -- draws the ┌ │ └ connectors down the gutter for multi-line ranges.
+    sign = "󰅺",
+    multi_line_sign = {
+      start_line = "┌",
+      connector = "│",
+      end_line = "└",
+    },
+    auto_refresh = {
+      -- Refresh comments/hunks when the checked-out branch or HEAD commit changes.
+      on_branch_change = true,
+      on_head_change = true,
+      -- Seconds between periodic background refreshes. Default 300 (5 min).
+      -- Set to 0 (or nil) to disable the timer. Only fires while comments or
+      -- hunks are enabled. `require("pr").set_refresh_interval(n)` swaps it at runtime.
+      interval = 300,
+    },
     -- Show outdated threads inline. Defaults to false because their line numbers
     -- refer to a previous commit's file state. Outdated threads remain visible
     -- via the popup and picker filters regardless.
@@ -119,42 +147,42 @@ return {
       function()
         require("pr").toggle_hunks()
       end,
-      { desc = "toggle PR hunks" },
+      desc = "toggle PR hunks",
     },
     {
       "<leader>uc",
       function()
         require("pr").toggle_comments()
       end,
-      { desc = "toggle PR comments" },
+      desc = "toggle PR comments",
     },
     {
       "<leader>gp",
       function()
         require("pr").popup()
       end,
-      { desc = "Show comment thread in floating window" },
+      desc = "Show comment thread in floating window",
     },
     {
       "<leader>fh",
       function()
         require("pr.picker").pick_hunks()
       end,
-      { desc = "Pick PR hunks" },
+      desc = "Pick PR hunks",
     },
     {
       "<leader>fg",
       function()
         require("pr.picker").pick_comments()
       end,
-      { desc = "Pick PR comments" },
+      desc = "Pick PR comments",
     },
     {
       "<leader>fp",
       function()
         require("pr.picker").pick_prs()
       end,
-      { desc = "Pick PR" },
+      desc = "Pick PR",
     },
     {
       "]ph",
@@ -186,11 +214,23 @@ return {
         require("pr.suggestion").comment_with_suggestion()
       end,
       mode = "v",
-      { desc = "Suggest change for visual selection" },
+      desc = "Suggest change for visual selection",
     },
   },
 }
 ```
+
+### Without lazy.nvim (packer, mini.deps, `:packadd`, manual clone)
+
+Once the plugin is on your `runtimepath`, a single call is all you need:
+
+```lua
+require("pr").setup({})
+```
+
+`setup()` merges your options over the defaults and registers the `:PR*` commands — pass the same `opts` table shown in the lazy.nvim example above.
+
+Calling `setup()` is optional to get started: `plugin/pr.lua` registers every `:PR*` command as a lightweight stub at startup, and the first time you run one it auto-runs `setup({})` (with defaults) before dispatching. Call `setup()` explicitly only when you want to pass options or wire up your own keymaps.
 
 ## Inside a comments popup
 
@@ -201,13 +241,14 @@ Once you open a thread (e.g. via `<leader>gp`), these keymaps are available on t
 - `r` — resolve / unresolve the thread (depending on its state and your permissions).
 - `a` — apply the suggestion in the focused comment to the underlying buffer (only when the comment contains a ` ```suggestion ` block; drift-aware). See "Suggested edits" below.
 - `ya` — yank the suggestion content to the system clipboard (only when the comment contains a ` ```suggestion ` block).
+- `s` — commit the pending edit draft upstream (resumes an edit you interrupted). Only bound when a saved edit draft exists for the focused comment — see "Editing an existing comment" below.
 - `<M-d>` — delete the comment (if you authored it).
 - `yl` — yank the thread's web URL to the clipboard (works on github / gitlab / bitbucket).
 - `gx` — open the thread in the system browser (uses `vim.ui.open`; requires Neovim 0.10+). Useful for content the plugin can't render — e.g. Copilot's "Suggested changeset" autofixes, which aren't exposed via the GitHub API.
 - `q` — close the comments popup.
 - `?` — open the keymap help menu showing every available action, including ones with no direct binding (like `edit`).
 
-Editing an existing comment is reached from the `?` menu (the `edit` action has no direct key). It opens an in-place edit mode on the comment's body; press `<CR>` to commit the edit or `<Esc><Esc>` to cancel.
+Editing an existing comment is reached from the `?` menu (the `edit` action has no direct key). It opens an in-place edit mode on the comment's body: type your changes, then **leave insert mode** (`<Esc>`) — the edit is sent upstream automatically on `InsertLeave` when the body changed. Press `<C-c>` in insert mode to cancel without committing. If you cancel (or Neovim crashes) mid-edit, the in-flight body is kept as an edit draft; reopen the thread and press `s` to commit it upstream, or `edit` again to keep working on it.
 
 ## Picking PRs
 
@@ -255,9 +296,9 @@ Saving an edit performs a remote-change check: if someone else (or you on anothe
 
 Inside the layout (works from either popup):
 
-- `a` — submit as **APPROVE** with the body.
-- `r` — submit as **REQUEST_CHANGES**.
-- `c` — submit as **COMMENT**.
+- `a` — submit as **APPROVE**. A body is optional: a bare approve (no body and no queued comments) is accepted, matching GitHub's own behavior.
+- `r` — submit as **REQUEST_CHANGES** (requires a body or at least one queued comment).
+- `c` — submit as **COMMENT** (requires a body or at least one queued comment).
 - `d` — discard the pending review (with confirm prompt).
 - `q` or `<Esc><Esc>` — close without submitting (pending comments are retained).
 
@@ -343,7 +384,7 @@ Combine with `:cdo` / `:cfdo` for batch operations across the PR.
 
 In-progress comment bodies persist to `stdpath('data') .. "/pr.nvim/drafts.json"` so a Neovim crash, restart, or switch to another buffer doesn't lose your work. Drafts cover three popup kinds:
 
-- **Edit drafts** — keyed by the comment's `database_id`. Auto-dropped when the comment changes remotely (the `updated_at` mismatch signals the upstream content moved on).
+- **Edit drafts** — keyed by the comment's `database_id`, saved as you type in the in-place edit mode. Retained if you cancel (`<C-c>`) or crash mid-edit, so you can resume from the popup with `s` (commit upstream) or `edit` (keep editing). Auto-dropped when the comment changes remotely (the `updated_at` mismatch signals the upstream content moved on), and deleted on a successful commit.
 - **New-comment drafts** — keyed by `path:start:end` of the visual selection that opened the popup. Persist until you submit (`<CR>`) or queue (`<C-r>`) the comment.
 - **Reply drafts** — keyed by thread id. Same persistence semantics as new-comment drafts.
 
@@ -387,7 +428,7 @@ Both empty-string cases produce a clear error notification; the edit popup stays
   unresolved     = 7,
   resolved       = 5,
   outdated       = 2,
-  on_buffer      = 1,     -- (reserved; use compute_for_buffer for live values)
+  on_buffer      = 0,     -- reserved; always 0. Use require("pr.status").compute_for_buffer(bufnr) for live per-buffer counts.
   pending_review = 3,     -- comments queued under a draft review (S1c)
 }
 ```
@@ -455,6 +496,7 @@ Disable completion entirely via `completion = { enabled = false }`.
 ## Commands
 
 - `:PRRefresh` — manually refresh PR comments, hunks, and PR number.
+- `:PRComment` — open the review-thread popup for the thread under the cursor (equivalent to `require("pr").popup()`).
 - `:PRList` — open a picker of your open PRs (mine / assigned / review-requested / all) and check one out. See "Picking PRs" above for picker-specific keybindings.
 - `:PRInfo` — show the current branch's PR title, body, state, labels, reviewers, assignees, and CI checks in a floating popup. `:PRInfo edit` opens directly in edit mode.
 - `:PRReview` — open the review-submission layout for the current PR (queues pending comments + lets you submit as approve / request-changes / comment).
@@ -464,3 +506,15 @@ Disable completion entirely via `completion = { enabled = false }`.
 - `:PRRefreshUsers` — clear the cached collaborator list (next `<C-x><C-o>` triggers a re-fetch).
 - `:PRRefreshIssues` — clear the cached issue + PR list.
 - `:checkhealth pr` — verify CLI tools (`gh` / `glab` / `curl` / `git`), Lua dependencies (`nui.nvim`, `plenary.nvim`), the configured picker plugin, and that the chosen provider implements the full method surface.
+
+Full reference documentation ships as vimdoc — run `:help pr` (or the topic tags `:help pr-commands`, `:help pr-keymaps`, `:help pr-providers`, `:help pr-api`).
+
+## Development & testing
+
+Contributions are welcome. The test, lint, and format tooling is driven by the `Makefile`:
+
+- `make test` — runs the [`plenary.busted`](https://github.com/nvim-lua/plenary.nvim) suite over `tests/` (the first run shallow-clones `plenary.nvim` to `/tmp/plenary.nvim`). The suite spans three layers: **pure-helper unit specs** (diff parsing, provider normalization, drift, suggestions, render helpers), **end-to-end `flow_*` specs** that drive the popups and pickers against a fake provider, and **contract specs** (`provider_contract_spec`, `picker_contract_spec`, `vimdoc_spec`) that assert every provider and picker implements the full method surface and that the bundled vimdoc stays in sync with the real commands.
+- `make lint` — `luacheck lua/ tests/`.
+- `make format` / `make format-check` — `stylua` (tabs, 160-column).
+
+CI (`.github/workflows/ci.yml`) runs all three on every push and pull request. See [`CLAUDE.md`](CLAUDE.md) for an architecture overview — the provider/picker strategy points, the parallel `comment`/`hunk` module shape, and the fetch-once caching model.
