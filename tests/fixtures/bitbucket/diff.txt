@@ -1,0 +1,9 @@
+diff --git a/src/foo.lua b/src/foo.lua
+index 1111111..2222222 100644
+--- a/src/foo.lua
++++ b/src/foo.lua
+@@ -1,3 +1,4 @@
+ line 1
+ line 2
++inserted line
+ line 3

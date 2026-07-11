@@ -31,4 +31,35 @@ describe("helpers.git_repo", function()
 		assert.is_not.equals(first, second)
 		assert.equals(second, repo.head())
 	end)
+
+	it("bare_origin: push a branch and fetch it back through origin", function()
+		-- origin stays host-shaped for parsing; repo.bare is a real fetchable path.
+		repo = git_repo.create({
+			origin = "git@bitbucket.org:acme/widget.git",
+			bare_origin = true,
+			files = { ["f.txt"] = { "x" } },
+		})
+		assert.equals(1, vim.fn.isdirectory(repo.bare))
+		-- The host-shaped URL is what a provider parses.
+		assert.equals("git@bitbucket.org:acme/widget.git", repo.git("remote", "get-url", "origin"))
+
+		-- Publish a branch to the bare origin, then drop it locally so a fetch is
+		-- genuinely required to get it back.
+		repo.checkout("feature/y", true)
+		repo.write("f.txt", { "x", "y" })
+		local sha = repo.commit("change f")
+		repo.push_bare("feature/y")
+		repo.checkout("main")
+		repo.git("branch", "-D", "feature/y")
+
+		-- Flip origin to the local bare path; a real fetch + checkout restores it.
+		repo.set_origin_url(repo.bare)
+		repo.git("fetch", "origin", "feature/y")
+		repo.git("checkout", "feature/y")
+
+		assert.equals("feature/y", repo.git("rev-parse", "--abbrev-ref", "HEAD"))
+		assert.equals(sha, repo.head())
+		assert.equals("x", vim.fn.readfile(repo.root .. "/f.txt")[1])
+		assert.equals("y", vim.fn.readfile(repo.root .. "/f.txt")[2])
+	end)
 end)
