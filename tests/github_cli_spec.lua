@@ -106,6 +106,8 @@ describe("github provider through real CLI plumbing", function()
 	it("get_comments runs the full chain and normalizes", function()
 		shim.stub("gh", {
 			PR_VIEW_NUMBER,
+			-- The fixture MUST be single-line: get_comments decodes only the
+			-- first stdout line of the graphql response.
 			{ match = { "api", "graphql" }, stdout_file = FIXTURES .. "/review_threads.json" },
 		})
 
@@ -121,6 +123,10 @@ describe("github provider through real CLI plumbing", function()
 		assert.is_not_nil(comments["lua/a.lua"])
 		local threads = comments["lua/a.lua"]
 		assert.equals(2, #threads)
+
+		-- Thread-level fields normalized straight off the fixture nodes.
+		assert.equals("T1", threads[1].id)
+		assert.is_false(threads[1].is_resolved)
 
 		assert.equals("alice", threads[1].comments[1].author)
 		assert.equals(1, threads[1].comments[1].start_line)
@@ -207,5 +213,188 @@ describe("github provider through real CLI plumbing", function()
 		-- The cleared cache forces a fresh graphql job; repo_info + pr_number
 		-- stay cached, so only the graphql call count grows 1 -> 2.
 		assert.equals(2, #calls_with("gh", "graphql"))
+		-- clear_comments leaves pr_number cached, so no second `gh pr view`.
+		assert.equals(1, #calls_with("gh", "view"))
+	end)
+
+	-- Join argv with the field separator so header/endpoint substrings can be
+	-- probed with plain `find`; no argv token carries a \31 byte.
+	local function join(argv)
+		return table.concat(argv, "\31")
+	end
+
+	-- Every notification message emitted so far, one per capture.
+	local function notify_msgs()
+		local out = {}
+		for _, n in ipairs(notifications) do
+			out[#out + 1] = n.msg
+		end
+		return out
+	end
+
+	it("reply sends a clean Accept header and correct endpoint", function()
+		-- Seed caches directly so the reply chain skips the git/gh routing jobs.
+		gh.repo_info = { owner = "acme", repo = "widget" }
+		gh.pr_number = 42
+		shim.stub("gh", { { match = { "api", "--method", "POST" }, stdout = "{}" } })
+
+		local done = false
+		gh.reply(1001, "hello", function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "reply cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert.truthy(joined:find("Accept: application/vnd.github+json", 1, true))
+		assert.is_nil(joined:find("'Accept", 1, true), "header must not carry literal quotes")
+		assert.truthy(joined:find("/repos/acme/widget/pulls/42/comments/1001/replies", 1, true))
+		assert_flag_pair(argv, "-f", "body=hello")
+	end)
+
+	it("comment posts a clean Accept header, endpoint, and field pairs", function()
+		gh.repo_info = { owner = "acme", repo = "widget" }
+		gh.pr_number = 42
+		-- get_commit_hash runs a real `git rev-parse HEAD` in the temp repo;
+		-- git is never shimmed, so the commit_id resolves to a live sha.
+		shim.stub("gh", { { match = { "api", "--method", "POST" }, stdout = "{}" } })
+
+		local done = false
+		gh.comment("lua/a.lua", 1, 3, "note body", function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "comment cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert.truthy(joined:find("Accept: application/vnd.github+json", 1, true))
+		assert.is_nil(joined:find("'Accept", 1, true), "header must not carry literal quotes")
+		assert.truthy(joined:find("/repos/acme/widget/pulls/42/comments", 1, true))
+		assert_flag_pair(argv, "-f", "body=note body")
+		assert_flag_pair(argv, "-f", "path=lua/a.lua")
+		assert_flag_pair(argv, "-F", "start_line=1")
+		assert_flag_pair(argv, "-f", "start_side=RIGHT")
+		assert_flag_pair(argv, "-F", "line=3")
+		assert_flag_pair(argv, "-f", "side=RIGHT")
+		-- commit_id carries the live sha; assert only the flag pairing exists.
+		assert.truthy(joined:find("\31-f\31commit_id=", 1, true), "commit_id must follow a -f flag")
+	end)
+
+	it("edit_comment PATCHes with a clean Accept header and endpoint", function()
+		gh.repo_info = { owner = "acme", repo = "widget" }
+		shim.stub("gh", { { match = { "api", "--method", "PATCH" }, stdout = "{}" } })
+
+		local done = false
+		gh.edit_comment(1001, "updated body", function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "edit_comment cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert.truthy(joined:find("Accept: application/vnd.github+json", 1, true))
+		assert.is_nil(joined:find("'Accept", 1, true), "header must not carry literal quotes")
+		assert.truthy(joined:find("/repos/acme/widget/pulls/comments/1001", 1, true))
+		assert_flag_pair(argv, "--method", "PATCH")
+		assert_flag_pair(argv, "-f", "body=updated body")
+	end)
+
+	it("delete_comment DELETEs with a clean Accept header and endpoint", function()
+		gh.repo_info = { owner = "acme", repo = "widget" }
+		shim.stub("gh", { { match = { "api", "--method", "DELETE" }, stdout = "{}" } })
+
+		local done = false
+		gh.delete_comment(1001, function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "delete_comment cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert.truthy(joined:find("Accept: application/vnd.github+json", 1, true))
+		assert.is_nil(joined:find("'Accept", 1, true), "header must not carry literal quotes")
+		assert.truthy(joined:find("/repos/acme/widget/pulls/comments/1001", 1, true))
+		assert_flag_pair(argv, "--method", "DELETE")
+	end)
+
+	it("remove_reaction DELETEs the reaction and logs no inspect dump", function()
+		gh.repo_info = { owner = "acme", repo = "widget" }
+		shim.stub("gh", { { match = { "api", "--method", "DELETE" }, stdout = "{}" } })
+
+		local done = false
+		gh.remove_reaction(1001, 555, function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "remove_reaction cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert.truthy(joined:find("/repos/acme/widget/pulls/comments/1001/reactions/555", 1, true))
+		assert_flag_pair(argv, "--method", "DELETE")
+		-- No leftover debug notify: a vim.inspect(args) dump renders as a table
+		-- literal, so no notification may start with `{`.
+		for _, msg in ipairs(notify_msgs()) do
+			assert.is_nil(tostring(msg):find("^%s*{"), "unexpected inspect-dump notification: " .. tostring(msg))
+		end
+	end)
+
+	it("resolve_thread runs the graphql mutation with a threadId pair", function()
+		shim.stub("gh", { { match = { "api", "graphql" }, stdout = "{}" } })
+
+		local done = false
+		gh.resolve_thread("T1", function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "resolve_thread cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert_flag_pair(argv, "-f", "threadId=T1")
+		assert.truthy(joined:find("resolveReviewThread", 1, true), "mutation name must be in the query arg")
+	end)
+
+	it("unresolve_thread runs the graphql mutation with a threadId pair", function()
+		shim.stub("gh", { { match = { "api", "graphql" }, stdout = "{}" } })
+
+		local done = false
+		gh.unresolve_thread("T1", function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "unresolve_thread cb")
+
+		local argv = shim.calls("gh")[1]
+		local joined = join(argv)
+		assert_flag_pair(argv, "-f", "threadId=T1")
+		assert.truthy(joined:find("unresolveReviewThread", 1, true), "mutation name must be in the query arg")
+	end)
+
+	it("get_git_user calls exactly `api user -q .login`", function()
+		shim.stub("gh", { { match = { "api", "user" }, stdout = "octocat\n" } })
+
+		local user
+		gh.get_git_user(function(u)
+			user = u
+		end)
+		wait_for(function()
+			return user ~= nil
+		end, "get_git_user cb")
+
+		assert.equals("octocat", user)
+		-- Full argv equality: no stray flags, no dead options bleeding into argv.
+		assert.same({ "api", "user", "-q", ".login" }, shim.calls("gh")[1])
 	end)
 end)
