@@ -1,6 +1,148 @@
 local M = {}
 local git = require("pr.provider").get_provider()
 
+-- ---------------------------------------------------------------------------
+-- Pure entry builders + confirm dispatchers.
+--
+-- These are UI-independent: they build the finder entries and dispatch the
+-- file-open / checkout that pick_comments / pick_hunks / pick_prs feed to
+-- telescope. They never require any `telescope.*` module, so they are safe to
+-- require and exercise without telescope.nvim installed (telescope's own
+-- requires stay deferred inside the pick_* functions).
+--
+-- Filtering boundary: `_build_comment_items` does NOT apply filter.apply --
+-- pick_comments applies the user-toggle filter on every finder run and hands
+-- the already-filtered Comments map here. Keep that split; do not fold
+-- filtering into the builder.
+--
+-- git_root is accepted for signature uniformity across the three backends. The
+-- telescope entries carry the *relative* path under `path` (and its start line
+-- under `lnum`); the absolute path is resolved from the provider at confirm
+-- time (`_confirm_comment` / `_confirm_hunk`), so the telescope builders don't
+-- embed git_root into their entries.
+--
+-- Entry shape (telescope): each entry carries `value` (the payload consumed at
+-- confirm / by the display fn), `path`/`lnum` (previewer target), `ordinal`
+-- (fuzzy-sort key) and `display`. `display` is a *function* (M.format_comments
+-- / M.format_hunks) for comments/hunks and a *string* for PRs.
+-- ---------------------------------------------------------------------------
+
+--- Build the comment picker entries from an already-filtered Comments map.
+---@param comments Comments already-filtered (filter.apply applied by caller)
+---@param git_root string absolute git root (unused here; see note above)
+---@return table[]
+function M._build_comment_items(comments, git_root)
+	local items = {}
+	for file, threads in pairs(comments) do
+		for _, thread in ipairs(threads) do
+			local _, first = next(thread.comments)
+			if first then
+				table.insert(items, {
+					value = {
+						file = file,
+						author = first.author,
+						body = first.body,
+						start_line = first.start_line,
+						end_line = first.end_line,
+						is_resolved = thread.is_resolved,
+						is_outdated = thread.is_outdated,
+					},
+					path = file,
+					lnum = first.start_line,
+					display = M.format_comments,
+					ordinal = first.author .. first.body .. file,
+				})
+			end
+		end
+	end
+	return items
+end
+
+--- Build the hunk picker entries.
+---@param hunks Hunks
+---@param git_root string absolute git root (unused here; see note above)
+---@return table[]
+function M._build_hunk_items(hunks, git_root)
+	local items = {}
+	for file, hs in pairs(hunks) do
+		for _, h in ipairs(hs) do
+			table.insert(items, {
+				value = {
+					file = file,
+					hunk_start = h.hunk_start,
+					hunk_end = h.hunk_end,
+					type = h.type,
+				},
+				path = file,
+				lnum = h.hunk_start,
+				display = M.format_hunks,
+				ordinal = file .. " " .. h.hunk_start .. ":" .. h.hunk_end,
+			})
+		end
+	end
+	return items
+end
+
+--- Build the PR picker entries.
+---@param prs PRSummary[]
+---@return table[]
+function M._build_pr_items(prs)
+	local items = {}
+	for _, pr in ipairs(prs) do
+		local display = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
+		table.insert(items, {
+			value = {
+				number = pr.number,
+				title = pr.title or "",
+				author = pr.author or "",
+				state = pr.state or "",
+				branch = pr.branch or "",
+				url = pr.url or "",
+			},
+			display = display,
+			ordinal = tostring(pr.number) .. " " .. (pr.title or "") .. " " .. (pr.author or ""),
+		})
+	end
+	return items
+end
+
+--- Open the file targeted by a selected comment entry. UI-independent: the
+--- caller closes the picker; this only resolves the absolute path and
+--- dispatches. Takes the selected telescope entry (may be nil).
+---@param selection table?
+function M._confirm_comment(selection)
+	if selection then
+		local rel = selection.value.file
+		local abs = require("pr.provider").get_provider().git_root .. "/" .. rel
+		require("pr.util").open_pr_file(abs, rel, { line = selection.value.start_line })
+	end
+end
+
+--- Open the file targeted by a selected hunk entry. UI-independent (see above).
+---@param selection table?
+function M._confirm_hunk(selection)
+	if selection then
+		local rel = selection.value.file
+		local abs = require("pr.provider").get_provider().git_root .. "/" .. rel
+		require("pr.util").open_pr_file(abs, rel, { line = selection.value.hunk_start })
+	end
+end
+
+--- Checkout the PR referenced by a selected entry. UI-independent: the caller
+--- closes the picker first. Takes the selected telescope entry (may be nil).
+---@param selection table?
+function M._confirm_pr(selection)
+	if not selection or not selection.value then
+		return
+	end
+	local ok_pr, pr_list = pcall(require, "pr.pr_list")
+	if not ok_pr or type(pr_list.checkout) ~= "function" then
+		vim.notify("pr_list.checkout not available yet")
+		return
+	end
+	pr_list.checkout(selection.value.number)
+end
+
 --- @class pr.pickers.PickCommentsConfig
 --- @field filters function[] (comments: Comments): Comments
 --- @field format function (entry: table): table
@@ -30,32 +172,10 @@ function M.pick_comments(opts)
 			return
 		end
 
+		-- filter.apply stays here (per finder run); the pure entry-building is in
+		-- M._build_comment_items.
 		local function build_items()
-			local comments = filter.apply(pre)
-			local items = {}
-			for file, threads in pairs(comments) do
-				for _, thread in ipairs(threads) do
-					local _, first = next(thread.comments)
-					if first then
-						table.insert(items, {
-							value = {
-								file = file,
-								author = first.author,
-								body = first.body,
-								start_line = first.start_line,
-								end_line = first.end_line,
-								is_resolved = thread.is_resolved,
-								is_outdated = thread.is_outdated,
-							},
-							path = file,
-							lnum = first.start_line,
-							display = M.format_comments,
-							ordinal = first.author .. first.body .. file,
-						})
-					end
-				end
-			end
-			return items
+			return M._build_comment_items(filter.apply(pre), require("pr.provider").get_provider().git_root)
 		end
 
 		local function new_finder()
@@ -77,11 +197,7 @@ function M.pick_comments(opts)
 					actions.select_default:replace(function()
 						local selection = action_state.get_selected_entry()
 						actions.close(prompt_bufnr)
-						if selection then
-							local rel = selection.value.file
-							local abs = require("pr.provider").get_provider().git_root .. "/" .. rel
-							require("pr.util").open_pr_file(abs, rel, { line = selection.value.start_line })
-						end
+						M._confirm_comment(selection)
 					end)
 					-- Toggle filter state then refresh the picker in place.
 					-- No re-fetch — filter.apply runs over the cached comments.
@@ -216,21 +332,13 @@ function M.pick_hunks(format)
 			return
 		end
 
-		local items = {}
-		for file, hs in pairs(hunks) do
-			for _, h in ipairs(hs) do
-				table.insert(items, {
-					value = {
-						file = file,
-						hunk_start = h.hunk_start,
-						hunk_end = h.hunk_end,
-						type = h.type,
-					},
-					path = file,
-					lnum = h.hunk_start,
-					display = format,
-					ordinal = file .. " " .. h.hunk_start .. ":" .. h.hunk_end,
-				})
+		local items = M._build_hunk_items(hunks, require("pr.provider").get_provider().git_root)
+		-- Honor a caller-supplied custom formatter (defaults to M.format_hunks,
+		-- which the builder already embeds). Kept at the call site so the builder
+		-- stays formatter-agnostic and uniform with the other backends.
+		if format ~= M.format_hunks then
+			for _, item in ipairs(items) do
+				item.display = format
 			end
 		end
 
@@ -249,11 +357,7 @@ function M.pick_hunks(format)
 					actions.select_default:replace(function()
 						local selection = action_state.get_selected_entry()
 						actions.close(prompt_bufnr)
-						if selection then
-							local rel = selection.value.file
-							local abs = require("pr.provider").get_provider().git_root .. "/" .. rel
-							require("pr.util").open_pr_file(abs, rel, { line = selection.value.hunk_start })
-						end
+						M._confirm_hunk(selection)
 					end)
 					return true
 				end,
@@ -292,23 +396,7 @@ function M.pick_prs(opts)
 	local state = { prs = {} }
 
 	local function build_items()
-		local items = {}
-		for _, pr in ipairs(state.prs) do
-			local display = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
-			table.insert(items, {
-				value = {
-					number = pr.number,
-					title = pr.title or "",
-					author = pr.author or "",
-					state = pr.state or "",
-					branch = pr.branch or "",
-					url = pr.url or "",
-				},
-				display = display,
-				ordinal = tostring(pr.number) .. " " .. (pr.title or "") .. " " .. (pr.author or ""),
-			})
-		end
-		return items
+		return M._build_pr_items(state.prs)
 	end
 
 	local function new_finder()
@@ -338,15 +426,7 @@ function M.pick_prs(opts)
 						actions.select_default:replace(function()
 							local selection = action_state.get_selected_entry()
 							actions.close(prompt_bufnr)
-							if not selection or not selection.value then
-								return
-							end
-							local ok_pr, pr_list = pcall(require, "pr.pr_list")
-							if not ok_pr or type(pr_list.checkout) ~= "function" then
-								vim.notify("pr_list.checkout not available yet")
-								return
-							end
-							pr_list.checkout(selection.value.number)
+							M._confirm_pr(selection)
 						end)
 
 						-- Cycle filter then refresh in place. list_prs is cached per
