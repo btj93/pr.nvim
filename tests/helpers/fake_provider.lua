@@ -46,7 +46,7 @@ function M.new(scenario)
 		pending = { review_id = 99, comments = {} },
 		collaborators = {},
 		issues = {},
-		reaction_palette = { ["+1"] = "👍", heart = "❤️" },
+		reaction_palette = { { content = "THUMBS_UP", glyph = "👍" }, { content = "HEART", glyph = "❤️" } },
 		repo_info = { owner = "owner", repo = "repo" },
 	})
 
