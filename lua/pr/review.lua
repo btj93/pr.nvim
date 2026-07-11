@@ -24,7 +24,9 @@ function M.show()
 				local ui = require("pr.ui")
 				ui.make_review_layout(pending or {}, {
 					on_submit = function(event, body, unmount)
-						if (event == "APPROVE" or event == "COMMENT" or event == "REQUEST_CHANGES") and body == "" and #(pending or {}) == 0 then
+						-- GitHub permits a bare APPROVE (no body, no pending comments);
+						-- only COMMENT and REQUEST_CHANGES need content.
+						if (event == "COMMENT" or event == "REQUEST_CHANGES") and body == "" and #(pending or {}) == 0 then
 							vim.notify("Body or pending comments required", vim.log.levels.ERROR)
 							-- keep the layout open so the user can add content and retry
 							return

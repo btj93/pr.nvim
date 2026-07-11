@@ -4,9 +4,10 @@
 -- list_review_comments -> make_review_layout chain, so every post-show assertion
 -- is gated on a predicate wait rather than a fixed sleep.
 --
--- Coverage: APPROVE/REQUEST_CHANGES/COMMENT submit (a/r/c), discard-with-confirm
--- plus declined-confirm (d), close-retaining-pending (q), and the empty-body
--- guard rejecting a content-less REQUEST_CHANGES.
+-- Coverage: APPROVE/REQUEST_CHANGES/COMMENT submit (a/r/c), bare APPROVE with
+-- no content (GitHub permits it), discard-with-confirm plus declined-confirm
+-- (d), close-retaining-pending (q), and the empty-body guard rejecting a
+-- content-less REQUEST_CHANGES.
 if not pcall(require, "nui.popup") then
 	return
 end
@@ -93,6 +94,27 @@ describe("flow: :PRReview submit / discard", function()
 		env.wait_for(function()
 			return #env.floats() == 0
 		end, 2000, "layout unmounted after submit")
+		assert.is_true(has_notification(env, "Review submitted: APPROVE"))
+	end)
+
+	it("a with empty body and no pending comments submits a bare APPROVE", function()
+		-- GitHub permits approving with no body and no pending comments; the
+		-- empty-content guard must not block APPROVE.
+		open_review() -- body editor left empty; scenario pending.comments is empty
+
+		env.feed("a")
+		env.wait_for(function()
+			return called(fake, "submit_review") ~= nil
+		end, 2000, "bare APPROVE submit")
+
+		local call = called(fake, "submit_review")
+		assert.equals(99, call.args[1])
+		assert.equals("APPROVE", call.args[2])
+		assert.equals("", call.args[3])
+
+		env.wait_for(function()
+			return #env.floats() == 0
+		end, 2000, "layout unmounted after bare APPROVE")
 		assert.is_true(has_notification(env, "Review submitted: APPROVE"))
 	end)
 
