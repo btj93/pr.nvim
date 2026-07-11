@@ -25,7 +25,9 @@ end
 
 describe("helpers.fake_provider", function()
 	it("logs every call with args", function()
-		local fake = fake_provider.new({})
+		-- Seed thread t1: reply fails loudly on an unknown id (no false greens),
+		-- so the logged call must target a real thread.
+		local fake = fake_provider.new({ comments = { ["a.lua"] = { thread("t1") } } })
 		fake.get_comments(function() end)
 		fake.reply("t1", "body", function() end)
 		assert.equals("get_comments", fake.calls[1].method)
@@ -44,6 +46,24 @@ describe("helpers.fake_provider", function()
 		end)
 		assert.equals(2, #got["a.lua"][1].comments)
 		assert.equals("a reply", got["a.lua"][1].comments[2].body)
+	end)
+
+	it("reply accepts the first comment's database_id like real callers", function()
+		local fake = fake_provider.new({ comments = { ["a.lua"] = { thread("t1") } } })
+		-- thread("t1")'s first comment has database_id 1001 (1000 + n, n = 1).
+		fake.reply(1001, "by comment id", function(ok)
+			assert.is_true(ok)
+		end)
+		local t = fake.scenario.comments["a.lua"][1]
+		assert.equals(2, #t.comments)
+		assert.equals("by comment id", t.comments[2].body)
+	end)
+
+	it("reply errors loudly on an unknown id", function()
+		local fake = fake_provider.new({})
+		local ok, err = pcall(fake.reply, "nope", "body", function() end)
+		assert.is_false(ok)
+		assert.is_truthy(tostring(err):find("no thread or comment"))
 	end)
 
 	it("resolve/unresolve flip is_resolved", function()

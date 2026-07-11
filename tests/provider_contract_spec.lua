@@ -99,5 +99,9 @@ describe("provider contract", function()
 		for _, field in ipairs(REQUIRED_FIELDS) do
 			assert.is_not_nil(fake[field], "fake provider missing field: " .. field)
 		end
+		for i, entry in ipairs(fake.reaction_palette) do
+			assert.equals("string", type(entry.content), "fake palette[" .. i .. "].content not a string")
+			assert.equals("string", type(entry.glyph), "fake palette[" .. i .. "].glyph not a string")
+		end
 	end)
 end)

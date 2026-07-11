@@ -166,23 +166,28 @@ function M.new(scenario)
 	-- ---------------------------------------------------------------------
 	-- Comment mutations
 	-- ---------------------------------------------------------------------
-	def("reply", function(thread_id, body, cb)
-		local t = find_thread(scenario, thread_id)
-		if t then
-			next_id = next_id + 1
-			local anchor = t.comments[1] or {}
-			table.insert(t.comments, {
-				database_id = next_id,
-				author = scenario.git_user,
-				body = body,
-				updated_at = "2026-07-11T00:00:00Z",
-				viewer_can_update = true,
-				viewer_can_delete = true,
-				viewer_can_react = true,
-				start_line = anchor.start_line,
-				end_line = anchor.end_line,
-			})
+	-- Real callers key reply two ways: ui.lua's reply path passes the FIRST
+	-- COMMENT's database_id, while some flow specs pass the thread id. Accept
+	-- both; fail loudly on no match (a silent cb(true) would hand future flow
+	-- specs a false green).
+	def("reply", function(id, body, cb)
+		local t = find_thread(scenario, id) or (find_comment(scenario, id))
+		if not t then
+			error("fake reply: no thread or comment with id " .. tostring(id))
 		end
+		next_id = next_id + 1
+		local anchor = t.comments[1] or {}
+		table.insert(t.comments, {
+			database_id = next_id,
+			author = scenario.git_user,
+			body = body,
+			updated_at = "2026-07-11T00:00:00Z",
+			viewer_can_update = true,
+			viewer_can_delete = true,
+			viewer_can_react = true,
+			start_line = anchor.start_line,
+			end_line = anchor.end_line,
+		})
 		if cb then
 			cb(true)
 		end
