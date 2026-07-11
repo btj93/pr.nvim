@@ -150,6 +150,44 @@ describe("flow: drafts popup lifecycle", function()
 		assert.is_nil(line_with(popup.bufnr, "STALE draft body"), "discarded draft text must not render")
 	end)
 
+	it("the save action (`s`) submits a pending edit draft via git.edit_comment and clears it", function()
+		local ui = require("pr.ui")
+		local drafts = require("pr.drafts")
+		local thread = fake.scenario.comments["lua/a.lua"][1]
+
+		-- Seed a pending edit draft for the thread's comment, as an interrupted
+		-- inline edit would have left behind. `s` is now a reachable action because
+		-- the live inline-edit path persists these drafts.
+		drafts.save_edit(1001, { body = { "resumed edit body" }, updated_at = "2026-01-01T00:00:00Z" })
+
+		local layout, comments_popup = ui.make_comments_layout(thread, "lua/a.lua")
+		layout:mount()
+
+		local body_line
+		env.wait_for(function()
+			body_line = line_with(comments_popup.bufnr, "please fix this")
+			return body_line ~= nil
+		end, 2000, "thread body rendered")
+
+		vim.api.nvim_set_current_win(comments_popup.winid)
+		vim.api.nvim_win_set_cursor(comments_popup.winid, { body_line, 0 })
+		env.feed("s")
+
+		env.wait_for(function()
+			return fake_provider.called(fake, "edit_comment") ~= nil
+		end, 2000, "edit_comment submitted from the pending draft")
+
+		local call = fake_provider.called(fake, "edit_comment")
+		assert.equals(1001, call.args[1])
+		assert.equals("resumed edit body", call.args[2])
+
+		env.wait_for(function()
+			return drafts.get_edit(1001) == nil
+		end, 2000, "draft cleared after a successful submit")
+
+		layout:unmount()
+	end)
+
 	it("new-comment draft keyed by path:start:end survives popup close and pre-fills", function()
 		local ui = require("pr.ui")
 		local drafts = require("pr.drafts")

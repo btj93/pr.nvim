@@ -292,4 +292,110 @@ describe("flow: inline edit via _start_inline_edit", function()
 		assert.is_nil(called(fake, "refetch_comment"))
 		assert.equals("line one edited\nline two", called(fake, "edit_comment").args[2])
 	end)
+
+	-- ---- edit-draft persistence (wired into the live inline-edit path) ----
+
+	it("typing during inline edit persists an edit draft keyed by database_id", function()
+		local drafts = require("pr.drafts")
+
+		ui._start_inline_edit(thread, comment, ctx)
+		-- In-range body edit -> the on_lines watcher persists the draft.
+		vim.api.nvim_buf_set_lines(buf, 1, 2, false, { "line one edited" })
+
+		-- save_edit updates the in-memory cache synchronously; get_edit reads that
+		-- cache, so the debounced disk write is irrelevant here.
+		env.wait_for(function()
+			return drafts.get_edit(1) ~= nil
+		end, 2000, "edit draft persisted on type")
+
+		local d = drafts.get_edit(1)
+		local body = type(d.body) == "table" and table.concat(d.body, "\n") or d.body
+		-- The full body range is stored, not just the edited line.
+		assert.equals("line one edited\nline two", body)
+		-- Keyed to the comment's updated_at snapshot at edit-start.
+		assert.equals("2026-01-01T00:00:00Z", d.updated_at)
+	end)
+
+	it("re-entering inline edit pre-fills the body from a matching draft", function()
+		local drafts = require("pr.drafts")
+		-- A draft whose updated_at matches the live comment must be restored into
+		-- the body range on entry; the header/footer stay put.
+		drafts.save_edit(1, { body = { "drafted one", "drafted two" }, updated_at = comment.updated_at })
+
+		ui._start_inline_edit(thread, comment, ctx)
+
+		assert.same({ "drafted one", "drafted two" }, vim.api.nvim_buf_get_lines(buf, 1, 3, false))
+		assert.equals("── alice ──", vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1])
+		assert.equals("── footer", vim.api.nvim_buf_get_lines(buf, 3, 4, false)[1])
+	end)
+
+	it("pre-fill adjusts the body range when the draft line count differs", function()
+		local drafts = require("pr.drafts")
+		-- Single-line draft over a two-line body: the range shrinks and the footer
+		-- rides up. An unchanged InsertLeave is then a no-op (the draft is what's on
+		-- screen), so nothing is committed and the draft is retained.
+		drafts.save_edit(1, { body = { "just one line" }, updated_at = comment.updated_at })
+
+		ui._start_inline_edit(thread, comment, ctx)
+		assert.same({ "── alice ──", "just one line", "── footer" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+
+		vim.api.nvim_exec_autocmds("InsertLeave", { buffer = buf })
+		env.wait_for(function()
+			return not vim.bo[buf].modifiable
+		end, 2000, "teardown without commit")
+		assert.is_nil(called(fake, "edit_comment"), "unchanged prefilled body commits nothing")
+		assert.is_not_nil(drafts.get_edit(1), "unchanged exit retains the draft")
+	end)
+
+	it("stale edit draft (updated_at mismatch) is dropped and not applied", function()
+		local drafts = require("pr.drafts")
+		drafts.save_edit(1, { body = { "STALE draft body" }, updated_at = "2000-01-01T00:00:00Z" })
+
+		ui._start_inline_edit(thread, comment, ctx)
+
+		-- The body still shows the live comment text; the stale draft is discarded.
+		assert.same({ "line one", "line two" }, vim.api.nvim_buf_get_lines(buf, 1, 3, false))
+		assert.is_nil(drafts.get_edit(1), "stale draft dropped from the store")
+	end)
+
+	it("successful commit deletes the pending edit draft", function()
+		config.opts.conflict_detection.enabled = false
+		local drafts = require("pr.drafts")
+
+		ui._start_inline_edit(thread, comment, ctx)
+		vim.api.nvim_buf_set_lines(buf, 1, 2, false, { "committed edit" })
+		env.wait_for(function()
+			return drafts.get_edit(1) ~= nil
+		end, 2000, "draft saved before commit")
+
+		vim.api.nvim_exec_autocmds("InsertLeave", { buffer = buf })
+		env.wait_for(function()
+			return called(fake, "edit_comment") ~= nil and drafts.get_edit(1) == nil
+		end, 2000, "commit clears the draft")
+	end)
+
+	it("cancel (skip-commit) retains the pending edit draft", function()
+		local drafts = require("pr.drafts")
+
+		ui._start_inline_edit(thread, comment, ctx)
+		vim.api.nvim_buf_set_lines(buf, 1, 2, false, { "in-flight cancelled edit" })
+		env.wait_for(function()
+			return drafts.get_edit(1) ~= nil
+		end, 2000, "draft saved before cancel")
+
+		-- Fire the <C-c> cancel mapping (sets skip_commit_on_leave), then the
+		-- synthetic InsertLeave the mapping's <Esc> would produce.
+		for _, km in ipairs(vim.api.nvim_buf_get_keymap(buf, "i")) do
+			if km.desc == "PR: cancel comment edit" and km.callback then
+				km.callback()
+			end
+		end
+		vim.api.nvim_exec_autocmds("InsertLeave", { buffer = buf })
+
+		env.wait_for(function()
+			return not vim.bo[buf].modifiable
+		end, 2000, "teardown after cancel")
+		assert.is_nil(called(fake, "edit_comment"), "cancel commits nothing")
+		assert.is_not_nil(drafts.get_edit(1), "cancel retains the draft (crash-safety)")
+	end)
 end)

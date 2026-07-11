@@ -1757,12 +1757,35 @@ function M._start_inline_edit(thread, comment, ctx)
 	local autocmd_id
 	local cursor_clamp_id
 
-	-- Snapshot the body to compare against on InsertLeave.
-	local original_body = vim.api.nvim_buf_get_lines(bufnr, body_start - 1, body_end, false)
-
 	-- Snapshot the comment's updated_at so we can detect remote edits between
-	-- the moment the user entered edit mode and the moment they commit.
+	-- the moment the user entered edit mode and the moment they commit. Captured
+	-- before any draft pre-fill because the persisted draft is keyed to this
+	-- same value.
 	local snapshot_updated_at = comment.updated_at
+
+	-- Restore a persisted edit draft, if one exists and still matches the
+	-- comment's updated_at, into the body range. A stale draft (the comment moved
+	-- on remotely) is dropped rather than restored. Done BEFORE the snapshots
+	-- below so `original_body` / `after_snapshot` reflect the buffer the user
+	-- actually sees; `current_body_end` is advanced to the draft's line count so
+	-- every downstream range read stays consistent.
+	do
+		local drafts = require("pr.drafts")
+		local persisted = drafts.get_edit(comment.database_id)
+		if persisted and persisted.updated_at ~= snapshot_updated_at then
+			drafts.delete_edit(comment.database_id)
+			persisted = nil
+		end
+		if persisted and persisted.body then
+			local draft_lines = type(persisted.body) == "table" and persisted.body or vim.split(persisted.body, "\n", { plain = true })
+			vim.bo[bufnr].modifiable = true
+			vim.api.nvim_buf_set_lines(bufnr, current_body_start - 1, current_body_end, false, draft_lines)
+			current_body_end = current_body_start + #draft_lines - 1
+		end
+	end
+
+	-- Snapshot the body to compare against on InsertLeave.
+	local original_body = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
 
 	-- Snapshot the lines outside the editable body so we can splice them back
 	-- on an out-of-range edit. Using `:undo` was unsafe here — in insert mode
@@ -1771,8 +1794,8 @@ function M._start_inline_edit(thread, comment, ctx)
 	-- mid-insert `:undo` could step all the way back to an empty buffer.
 	-- Declared up-front so the closures below (commit/do_edit) can refresh
 	-- `after_snapshot` after a conflict-driven "Refresh" rewrite.
-	local before_snapshot = vim.api.nvim_buf_get_lines(bufnr, 0, body_start - 1, false)
-	local after_snapshot = vim.api.nvim_buf_get_lines(bufnr, body_end, -1, false)
+	local before_snapshot = vim.api.nvim_buf_get_lines(bufnr, 0, current_body_start - 1, false)
+	local after_snapshot = vim.api.nvim_buf_get_lines(bufnr, current_body_end, -1, false)
 	local restoring = false
 
 	local function teardown()
@@ -1892,9 +1915,21 @@ function M._start_inline_edit(thread, comment, ctx)
 			local body_first = current_body_start - 1
 			local body_last_excl = current_body_end
 
-			-- In-range: change is fully inside body. Just track the size delta.
+			-- In-range: change is fully inside body. Track the size delta and persist
+			-- the in-flight body as an edit draft (crash-safety). Keyed by
+			-- database_id + the updated_at snapshot, mirroring the popup reference:
+			-- a later remote change (updated_at mismatch) drops it on the next edit
+			-- entry, and only a successful commit deletes it. Reads are safe inside
+			-- on_lines; the save writes an in-memory cache + debounced disk write.
 			if firstline >= body_first and lastline <= body_last_excl then
 				current_body_end = current_body_end + delta
+				local body_lines = vim.api.nvim_buf_get_lines(bufnr, current_body_start - 1, current_body_end, false)
+				if not vim.deep_equal(body_lines, original_body) then
+					require("pr.drafts").save_edit(comment.database_id, {
+						body = body_lines,
+						updated_at = snapshot_updated_at,
+					})
+				end
 				return
 			end
 
