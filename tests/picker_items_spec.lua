@@ -9,7 +9,9 @@
 --
 -- The three backends carry the target differently:
 --   * snacks    — item.file (relative) + item.pos = { line, col }
---   * telescope — entry.path (relative) + entry.lnum
+--   * telescope — entry.path (ABSOLUTE, git_root .. "/" .. rel, for the
+--                 previewer) + entry.lnum; the relative payload lives at
+--                 entry.value.file, which is what the extractors below compare
 --   * fzf       — a bare "file:line:col:label" string (parsed back with the same
 --                 `^([^:]+):(%d+):` regex the fzf confirms use)
 -- and identify a PR differently (snacks item.data.number / telescope
@@ -108,10 +110,12 @@ local function snacks_targets(items)
 	return out
 end
 
+-- telescope entries carry the ABSOLUTE previewer path under `path`; compare on
+-- the relative payload (`value.file`) so the target sets stay backend-neutral.
 local function telescope_targets(items)
 	local out = {}
 	for _, e in ipairs(items) do
-		out[#out + 1] = { path = e.path, line = e.lnum }
+		out[#out + 1] = { path = e.value.file, line = e.lnum }
 	end
 	return out
 end
@@ -197,12 +201,13 @@ local function snacks_glyphs(items)
 end
 
 -- telescope: call the display function and read the leading glyph token off the
--- ACTUAL rendered string ("<glyph> <icon> <author> ...").
+-- ACTUAL rendered string ("<glyph> <icon> <author> ..."). Keyed on the relative
+-- payload (`value.file`), not the absolute previewer `path`.
 local function telescope_glyphs(items)
 	local m = {}
 	for _, e in ipairs(items) do
 		local rendered = e.display(e)
-		m[e.path .. ":" .. e.lnum] = rendered:match("^(%S+)")
+		m[e.value.file .. ":" .. e.lnum] = rendered:match("^(%S+)")
 	end
 	return m
 end
@@ -231,7 +236,7 @@ end
 
 local function find_telescope_by_target(items, path, line)
 	for _, e in ipairs(items) do
-		if e.path == path and e.lnum == line then
+		if e.value.file == path and e.lnum == line then
 			return e
 		end
 	end

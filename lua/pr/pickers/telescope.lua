@@ -15,11 +15,12 @@ local git = require("pr.provider").get_provider()
 -- the already-filtered Comments map here. Keep that split; do not fold
 -- filtering into the builder.
 --
--- git_root is accepted for signature uniformity across the three backends. The
--- telescope entries carry the *relative* path under `path` (and its start line
--- under `lnum`); the absolute path is resolved from the provider at confirm
--- time (`_confirm_comment` / `_confirm_hunk`), so the telescope builders don't
--- embed git_root into their entries.
+-- git_root is accepted for signature uniformity across the three backends; the
+-- telescope builders embed it into `path` (git_root .. "/" .. rel) so the
+-- telescope previewer resolves the file even when cwd != git root. The
+-- *relative* path lives under `value.file` — the display fns render it and the
+-- confirm dispatchers (`_confirm_comment` / `_confirm_hunk`) resolve it against
+-- the provider's git_root at confirm time.
 --
 -- Entry shape (telescope): each entry carries `value` (the payload consumed at
 -- confirm / by the display fn), `path`/`lnum` (previewer target), `ordinal`
@@ -29,7 +30,7 @@ local git = require("pr.provider").get_provider()
 
 --- Build the comment picker entries from an already-filtered Comments map.
 ---@param comments Comments already-filtered (filter.apply applied by caller)
----@param git_root string absolute git root (unused here; see note above)
+---@param git_root string absolute git root (prefixes `path` for the previewer)
 ---@return table[]
 function M._build_comment_items(comments, git_root)
 	local items = {}
@@ -47,7 +48,7 @@ function M._build_comment_items(comments, git_root)
 						is_resolved = thread.is_resolved,
 						is_outdated = thread.is_outdated,
 					},
-					path = file,
+					path = git_root .. "/" .. file,
 					lnum = first.start_line,
 					display = M.format_comments,
 					ordinal = first.author .. first.body .. file,
@@ -60,7 +61,7 @@ end
 
 --- Build the hunk picker entries.
 ---@param hunks Hunks
----@param git_root string absolute git root (unused here; see note above)
+---@param git_root string absolute git root (prefixes `path` for the previewer)
 ---@return table[]
 function M._build_hunk_items(hunks, git_root)
 	local items = {}
@@ -73,7 +74,7 @@ function M._build_hunk_items(hunks, git_root)
 					hunk_end = h.hunk_end,
 					type = h.type,
 				},
-				path = file,
+				path = git_root .. "/" .. file,
 				lnum = h.hunk_start,
 				display = M.format_hunks,
 				ordinal = file .. " " .. h.hunk_start .. ":" .. h.hunk_end,

@@ -16,8 +16,10 @@
 -- builder must emit a row for it regardless of filter state).
 --
 -- Note for the cross-backend spec (Task 4): telescope entries carry the
--- *relative* path under `path`/`lnum` (snacks uses `file`/`pos`); the absolute
--- path is resolved from the provider at confirm time.
+-- ABSOLUTE path under `path` (git_root .. "/" .. rel) so telescope's previewer
+-- resolves the file regardless of cwd; the relative payload stays under
+-- `value.file` (snacks uses `file`/`pos`), which is what the display fns render
+-- and what the confirm dispatchers resolve against the provider's git_root.
 
 local telescope = require("pr.pickers.telescope")
 local filter = require("pr.pickers.filter")
@@ -123,10 +125,13 @@ describe("telescope picker entry builders + confirm dispatchers", function()
 			assert.equals(2, #items)
 		end)
 
-		it("carries value/path/lnum/ordinal and the format_comments display fn", function()
+		it("carries value/absolute path/lnum/ordinal and the format_comments display fn", function()
 			local items = telescope._build_comment_items(COMMENTS, GIT_ROOT)
 
 			-- Single file + ipairs over the thread list => deterministic order.
+			-- `path` is ABSOLUTE (git_root .. "/" .. rel) so telescope's previewer
+			-- resolves the file even when cwd != git root; `value.file` stays
+			-- relative for display/confirm.
 			local e1 = items[1]
 			assert.equals("lua/a.lua", e1.value.file)
 			assert.equals("alice", e1.value.author)
@@ -135,7 +140,7 @@ describe("telescope picker entry builders + confirm dispatchers", function()
 			assert.equals(10, e1.value.end_line)
 			assert.is_false(e1.value.is_resolved)
 			assert.is_false(e1.value.is_outdated)
-			assert.equals("lua/a.lua", e1.path)
+			assert.equals("/repo/lua/a.lua", e1.path)
 			assert.equals(10, e1.lnum)
 			assert.equals("alice" .. "first body" .. "lua/a.lua", e1.ordinal)
 			assert.equals(telescope.format_comments, e1.display)
@@ -148,13 +153,13 @@ describe("telescope picker entry builders + confirm dispatchers", function()
 			assert.equals(25, e2.value.end_line)
 			assert.is_true(e2.value.is_resolved)
 			assert.is_false(e2.value.is_outdated)
-			assert.equals("lua/a.lua", e2.path)
+			assert.equals("/repo/lua/a.lua", e2.path)
 			assert.equals(20, e2.lnum)
 			assert.equals("bob" .. "second body" .. "lua/a.lua", e2.ordinal)
 			assert.equals(telescope.format_comments, e2.display)
 		end)
 
-		it("display fn renders glyph + icon + author + truncated body + file", function()
+		it("display fn renders glyph + icon + author + truncated body + RELATIVE file", function()
 			local items = telescope._build_comment_items(COMMENTS, GIT_ROOT)
 
 			-- The unresolved thread renders the "·" state glyph; the resolved one
@@ -179,15 +184,16 @@ describe("telescope picker entry builders + confirm dispatchers", function()
 			assert.equals(2, #items)
 		end)
 
-		it("carries value/path/lnum/ordinal and the format_hunks display fn", function()
+		it("carries value/absolute path/lnum/ordinal and the format_hunks display fn", function()
 			local items = telescope._build_hunk_items(HUNKS, GIT_ROOT)
 
+			-- `path` is ABSOLUTE for the previewer; `value.file` stays relative.
 			local e1 = items[1]
 			assert.equals("lua/a.lua", e1.value.file)
 			assert.equals(5, e1.value.hunk_start)
 			assert.equals(8, e1.value.hunk_end)
 			assert.equals("Add", e1.value.type)
-			assert.equals("lua/a.lua", e1.path)
+			assert.equals("/repo/lua/a.lua", e1.path)
 			assert.equals(5, e1.lnum)
 			assert.equals("lua/a.lua 5:8", e1.ordinal)
 			assert.equals(telescope.format_hunks, e1.display)
@@ -197,13 +203,13 @@ describe("telescope picker entry builders + confirm dispatchers", function()
 			assert.equals(30, e2.value.hunk_start)
 			assert.equals(30, e2.value.hunk_end)
 			assert.equals("Delete", e2.value.type)
-			assert.equals("lua/a.lua", e2.path)
+			assert.equals("/repo/lua/a.lua", e2.path)
 			assert.equals(30, e2.lnum)
 			assert.equals("lua/a.lua 30:30", e2.ordinal)
 			assert.equals(telescope.format_hunks, e2.display)
 		end)
 
-		it("display fn renders icon + padded file + start:end", function()
+		it("display fn renders icon + padded RELATIVE file + start:end", function()
 			local items = telescope._build_hunk_items(HUNKS, GIT_ROOT)
 			assert.equals(string.format("%s %-80s %s:%s", "IC", "lua/a.lua", 5, 8), items[1].display(items[1]))
 			assert.equals(string.format("%s %-80s %s:%s", "IC", "lua/a.lua", 30, 30), items[2].display(items[2]))
