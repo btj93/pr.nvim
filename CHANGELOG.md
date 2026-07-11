@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-07-11
+
+Initial public release: inline PR review comments and diff hunks for Neovim
+with floating-window UI for reading, replying, reviewing, and editing across
+GitHub, GitLab, and Bitbucket Cloud — plus a three-layer programmatic test
+suite (780 tests) covering every user-facing flow.
+
+The entries below record what changed during the release-hardening campaign
+relative to the pre-release development tree.
+
 ### Added
 
 - `:PRComment` command — open the review-thread popup for the thread under
@@ -68,4 +80,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plugin/pr.lua` no longer clobbers the real `:PR*` commands (losing completion
   and strict argument specs) when it is sourced after `setup()` has already run.
 
-[Unreleased]: https://github.com/btj93/pr.nvim/commits/main
+[Unreleased]: https://github.com/btj93/pr.nvim/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/btj93/pr.nvim/releases/tag/v0.1.0
