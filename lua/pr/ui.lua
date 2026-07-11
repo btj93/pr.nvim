@@ -960,20 +960,11 @@ function M.make_comments_layout(thread, relative_path)
 	local inline_edit_fallback_keys = { a = true, A = true, i = true, I = true, o = true, O = true }
 
 	-- Per-action keymaps, dispatching to the comment under cursor.
-	for k, action in pairs(M.actions) do
+	for _, action in pairs(M.actions) do
 		if action.key then
 			comments_popup:map(action.mode, action.key, function()
 				local comment, idx = under_cursor()
 				if not comment or not idx then
-					return
-				end
-				if not action.can_perform(thread, comment) then
-					-- Action can't fire — for the editing keys, fall back to
-					-- the inline-edit-on-keypress behavior so users can still
-					-- edit their own comments with `a`/`i`/`o` etc.
-					if inline_edit_fallback_keys[action.key] then
-						try_start_inline_edit(action.key)()
-					end
 					return
 				end
 				local ctx = {
@@ -988,7 +979,29 @@ function M.make_comments_layout(thread, relative_path)
 						layout:unmount()
 					end,
 				}
-				M.actions[k].perform(thread, comment, new_reply_popup, comments_popup.winid, ctx)
+				-- Dispatch to whichever action on this key+mode can_perform for the
+				-- focused thread/comment. can_perform is still the gate; we just
+				-- evaluate it across every action sharing the binding. This is what
+				-- makes the resolve/unresolve `r` collision work: both bind `r` and
+				-- only one is applicable per thread, but nui's :map is last-write-
+				-- wins, so the surviving closure isn't necessarily the applicable
+				-- action — resolve it here rather than trusting binding order.
+				if action.can_perform(thread, comment) then
+					action.perform(thread, comment, new_reply_popup, comments_popup.winid, ctx)
+					return
+				end
+				for _, sibling in pairs(M.actions) do
+					if sibling ~= action and sibling.key == action.key and sibling.mode == action.mode and sibling.can_perform(thread, comment) then
+						sibling.perform(thread, comment, new_reply_popup, comments_popup.winid, ctx)
+						return
+					end
+				end
+				-- No applicable action — for the editing keys, fall back to the
+				-- inline-edit-on-keypress behavior so users can still edit their own
+				-- comments with `a`/`i`/`o` etc.
+				if inline_edit_fallback_keys[action.key] then
+					try_start_inline_edit(action.key)()
+				end
 			end)
 		end
 	end
