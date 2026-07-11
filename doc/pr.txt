@@ -282,7 +282,8 @@ Actions (dispatch to the comment under the cursor) ~
     r                 Resolve or Unresolve the thread (whichever applies)
     c                 Reply: jump to the composer. In visual mode, quote
                       the selection into the composer
-    s                 Save a pending edit draft for this comment
+    s                 Commit the pending edit draft upstream
+                      (only bound when a saved draft exists)
     a                 Apply the comment's ```suggestion; with no
                       suggestion, falls through to editing your comment
     ya                Yank the suggestion content to + and "

@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `:PRComment` command — file a new review comment from the current line or a
-  visual selection, without leaving the buffer.
+- `:PRComment` command — open the review-thread popup for the thread under
+  the cursor (equivalent to `require("pr").popup()`).
 - `plugin/pr.lua` auto-setup entry: all ten `:PR*` commands are registered on
   startup as lazy bootstrap stubs that require and set up `pr` on first use, so
   the commands work without an explicit `require("pr").setup()` call.
