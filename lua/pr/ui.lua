@@ -231,9 +231,9 @@ function M._render_pending_list(pending)
 	return lines
 end
 
---- Compute the bottom-border-style hint string for one comment, mirroring
---- `get_popup_hints` but as a single pre-formatted string suitable for virt_text.
---- Exported (`M._compute_hint_text`) so it can be unit-tested directly.
+--- Compute the bottom-border-style hint string for one comment: the applicable
+--- actions' `popup_hint`s joined into a single pre-formatted string suitable for
+--- virt_text. Exported (`M._compute_hint_text`) so it can be unit-tested directly.
 ---@param thread ReviewThread
 ---@param comment CommentInfo
 ---@param mode string
@@ -249,147 +249,6 @@ function M._compute_hint_text(thread, comment, mode)
 		return ""
 	end
 	return " " .. table.concat(parts, " | ") .. " "
-end
-
----
----@param mode string
----@param thread ReviewThread
----@param comment CommentInfo
----@return string[]
-local function get_popup_hints(mode, thread, comment)
-	local menus = {}
-	for _, action in pairs(M.actions) do
-		if action.mode == mode and action.show_hint and action.can_perform(thread, comment) then
-			table.insert(menus, action.popup_hint)
-		end
-	end
-
-	return menus
-end
-
----
----@param thread ReviewThread
----@param comment CommentInfo
----@param new_reply_popup NuiPopup
----@param enter boolean
----@return NuiPopup
-function M.make_comment_popup(thread, comment, new_reply_popup, enter)
-	local author_display = comment.author
-	if comment.viewer_did_author then
-		author_display = author_display .. " (you)"
-	end
-
-	local popup = Popup({
-		border = {
-			padding = {
-				top = 0,
-				bottom = 0,
-				left = 1,
-				right = 1,
-			},
-			style = "rounded",
-			text = {
-				top = author_display .. ":",
-				top_align = "left",
-			},
-		},
-		buf_options = {
-			modifiable = comment.viewer_can_update,
-			readonly = not comment.viewer_can_update,
-			filetype = "markdown",
-		},
-		win_options = {
-			winhighlight = "Normal:Normal,FloatBorder:FloatBorder",
-			wrap = true,
-			linebreak = true,
-			breakindent = true,
-			spell = false,
-			foldenable = false,
-		},
-		enter = enter or false,
-	})
-
-	local buf_enter_event = { event.BufEnter }
-	if enter then
-		table.insert(buf_enter_event, event.BufWinEnter)
-	end
-
-	popup:on(buf_enter_event, function()
-		popup.border:set_highlight(config.opts.highlights.popup_hl)
-	end)
-
-	popup:on({ event.ModeChanged, unpack(buf_enter_event) }, function()
-		if vim.api.nvim_get_current_buf() ~= popup.bufnr then
-			return
-		end
-
-		-- TODO: update menu on comment edit
-		local mode = vim.api.nvim_get_mode().mode
-		local menus = get_popup_hints(mode, thread, comment)
-		local menu = " " .. table.concat(menus, " | ") .. " "
-		popup.border:set_text("bottom", menu, "right")
-	end)
-
-	popup:on(event.BufLeave, function()
-		popup.border:set_highlight("FloatBorder")
-		-- don't set text if popup is closing
-		if popup.border.bufnr then
-			popup.border:set_text("bottom", nil, "right")
-		end
-	end)
-
-	-- If a persisted draft exists and matches this comment's updated_at, restore it.
-	-- Otherwise drop any stale draft (the upstream comment has moved on).
-	local drafts = require("pr.drafts")
-	local persisted = drafts.get_edit(comment.database_id)
-	if persisted and persisted.updated_at ~= comment.updated_at then
-		drafts.delete_edit(comment.database_id)
-		persisted = nil
-	end
-
-	local body
-	if persisted and persisted.body then
-		body = type(persisted.body) == "table" and persisted.body or vim.fn.split(persisted.body, "\n")
-	else
-		local b = comment.body:gsub("\r", "")
-		body = vim.fn.split(b, "\n")
-	end
-
-	local emojis = M.format_reaction(comment.reaction_groups)
-	local emojis_width = vim.fn.strdisplaywidth(emojis)
-
-	vim.api.nvim_buf_set_lines(popup.bufnr, 0, 1, false, body)
-
-	vim.api.nvim_buf_set_extmark(popup.bufnr, config.opts.highlights.comments_ns_id, #body - 1, -1, {
-		virt_lines = {
-			{ { (" "):rep(BODY_WIDTH), config.opts.highlights.comment_sep } },
-			{ { emojis .. (" "):rep(BODY_WIDTH - emojis_width), "StatusLine" } },
-		},
-	})
-
-	if comment.viewer_can_update then
-		popup:on({ event.TextChanged, event.TextChangedI }, function()
-			local new_body = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, true)
-			if vim.deep_equal(new_body, body) then
-				return
-			end
-
-			drafts.save_edit(comment.database_id, {
-				body = new_body,
-				updated_at = comment.updated_at,
-			})
-		end)
-	end
-
-	for k, action in pairs(M.actions) do
-		if action.key and action.can_perform(thread, comment) then
-			popup:map(action.mode, action.key, function()
-				M.actions[k].perform(thread, comment, new_reply_popup, popup.winid)
-			end)
-		end
-	end
-
-	return popup
 end
 
 -- TODO: make templates
@@ -684,7 +543,7 @@ function M.make_comments_layout(thread, relative_path)
 		enter = true,
 	})
 
-	-- Border focus highlight, mirroring make_comment_popup.
+	-- Border focus highlight: emphasize the border while the popup holds focus.
 	comments_popup:on({ event.BufEnter }, function()
 		comments_popup.border:set_highlight(config.opts.highlights.popup_hl)
 	end)

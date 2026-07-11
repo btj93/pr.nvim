@@ -3,8 +3,10 @@
 -- this spec locks the UI wiring that feeds it:
 --   * reply drafts saved by the reply composer's on_lines watcher pre-fill on
 --     reopen (ui.make_comments_layout).
---   * an edit draft is dropped when the comment's updated_at moved on remotely
---     (ui.make_comment_popup, the updated_at-mismatch guard).
+--   * a pending edit draft is submitted by the `s` (save) action from the live
+--     comments layout (ui.make_comments_layout). The edit-draft lifecycle itself
+--     (save-on-type / pre-fill / drop-on-mismatch) is covered against the live
+--     inline-edit path in flow_edit_inplace_spec.
 --   * new-comment drafts keyed "<path>:<start>:<end>" survive close + pre-fill
 --     (ui.make_new_comment_layout).
 --   * the PRDraftsFlush augroup (init.lua) flushes the debounced write to disk
@@ -108,46 +110,6 @@ describe("flow: drafts popup lifecycle", function()
 			return line_with(new_reply_popup2.bufnr, "half-written reply") ~= nil
 		end, 2000, "reply draft pre-filled on reopen")
 		layout2:unmount()
-	end)
-
-	it("edit draft is dropped when the comment's updated_at changed remotely", function()
-		local ui = require("pr.ui")
-		local drafts = require("pr.drafts")
-
-		-- Seed a stale edit draft: its updated_at predates the comment's current
-		-- updated_at, so the popup must discard it rather than restore stale text.
-		drafts.save_edit(1001, { body = "STALE draft body", updated_at = "2020-01-01T00:00:00Z" })
-		assert.is_not_nil(drafts.get_edit(1001))
-
-		local thread = {
-			id = "T1",
-			is_resolved = false,
-			viewer_can_resolve = true,
-			viewer_can_unresolve = false,
-			viewer_can_reply = true,
-		}
-		local comment = {
-			database_id = 1001,
-			author = "alice",
-			body = "current upstream body",
-			updated_at = "2026-07-11T00:00:00Z", -- moved on since the draft was saved
-			viewer_can_update = true,
-			viewer_can_delete = false,
-			viewer_can_react = false,
-			start_line = 1,
-			end_line = 1,
-			reaction_groups = {},
-		}
-
-		-- Building the popup runs the updated_at-mismatch guard synchronously.
-		local popup = ui.make_comment_popup(thread, comment, nil, false)
-
-		-- The stale draft is dropped...
-		assert.is_nil(drafts.get_edit(1001), "stale edit draft must be dropped")
-		-- ...and the popup shows the live comment body, not the discarded draft.
-		local body = vim.api.nvim_buf_get_lines(popup.bufnr, 0, -1, false)
-		assert.equals("current upstream body", body[1])
-		assert.is_nil(line_with(popup.bufnr, "STALE draft body"), "discarded draft text must not render")
 	end)
 
 	it("the save action (`s`) submits a pending edit draft via git.edit_comment and clears it", function()
