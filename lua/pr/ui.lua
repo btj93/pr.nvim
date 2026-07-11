@@ -1546,7 +1546,7 @@ local function make_emoji_menu(comment_id, reaction_groups, winid, row, refresh)
 
 			if item.viewer_has_reacted then
 				for _, reaction in ipairs(item.reactions) do
-					if reaction.user.login == M.git_user then
+					if reaction.user == git.git_user then
 						git.remove_reaction(item.comment_id, reaction.database_id, vim.schedule_wrap(after))
 						return
 					end
