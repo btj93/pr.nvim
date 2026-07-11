@@ -1,0 +1,200 @@
+-- Tier 2 flow spec for pr.setup(): the one-time bootstrap that registers user
+-- commands, defines signcolumn signs, installs the plugin's autocmd groups
+-- (conditioned on config), wires the built-in winbar, and — via run_on_start —
+-- optionally kicks comment.start / hunk.start.
+--
+-- DANGER (from the task brief): setup() with defaults starts a live 300s timer
+-- and run_on_start.comments = true shells out. Every setup() here passes
+-- run_on_start = { comments = false, hunks = false } and
+-- auto_refresh = { interval = 0, on_branch_change = false, on_head_change = false }
+-- unless the case under test needs one enabled, and after_each stops the timer
+-- (set_refresh_interval(0)) and deletes every augroup so nothing leaks.
+
+local fake_provider = require("helpers.fake_provider")
+
+-- pr.config is never reloaded (the provider proxy captured it at load, and
+-- reloading would desync the two), but the pr module IS reloaded per test so
+-- setup()'s internal state (last_branch/last_git_root, timer handle) starts fresh.
+-- Reloading resolves `pr` against the cwd, so restore the plugin root first.
+local PLUGIN_ROOT = vim.fn.getcwd()
+
+local SAFE_AUTO = { interval = 0, on_branch_change = false, on_head_change = false }
+
+local function augroup_exists(name)
+	-- nvim_get_autocmds errors when the group is undefined.
+	return (pcall(vim.api.nvim_get_autocmds, { group = name }))
+end
+
+describe("flow: pr.setup()", function()
+	local pr, comment, hunk, fake, uninstall
+
+	before_each(function()
+		vim.cmd.cd(PLUGIN_ROOT)
+		comment = require("pr.comment")
+		hunk = require("pr.hunk")
+		package.loaded["pr"] = nil
+		pr = require("pr")
+		fake, uninstall = fake_provider.install("flow_setup_fake", {})
+		pcall(function()
+			require("pr.review_local")._set_path(vim.fn.tempname())
+		end)
+		pcall(function()
+			require("pr.drafts")._set_path(vim.fn.tempname())
+		end)
+	end)
+
+	after_each(function()
+		pcall(function()
+			pr.set_refresh_interval(0)
+		end)
+		pcall(comment.stop)
+		pcall(hunk.stop)
+		comment.enabled = false
+		hunk.enabled = false
+		for _, g in ipairs({
+			"PRColorScheme",
+			"PRAutoRefresh",
+			"PRHeadChange",
+			"PRWinbar",
+			"PRDraftsFlush",
+			"PRComment",
+			"PRHunk",
+			"PRCommentBufWrite",
+			"PRHunkBufWrite",
+		}) do
+			pcall(vim.api.nvim_del_augroup_by_name, g)
+		end
+		if uninstall then
+			uninstall()
+		end
+		vim.cmd("silent! %bwipeout!")
+	end)
+
+	it("setup registers all 9 user commands", function()
+		pr.setup({ run_on_start = { comments = false, hunks = false }, auto_refresh = SAFE_AUTO })
+
+		local cmds = vim.api.nvim_get_commands({})
+		local expected = {
+			"PRRefresh",
+			"PRList",
+			"PRInfo",
+			"PRReview",
+			"PRReviewDiscard",
+			"PRSuggest",
+			"PRQuickfix",
+			"PRRefreshUsers",
+			"PRRefreshIssues",
+		}
+		assert.equals(9, #expected)
+		for _, name in ipairs(expected) do
+			assert.is_not_nil(cmds[name], "missing user command " .. name)
+		end
+	end)
+
+	it("setup defines the 4 signs", function()
+		pr.setup({ run_on_start = { comments = false, hunks = false }, auto_refresh = SAFE_AUTO })
+
+		local h = require("pr.config").opts.highlights
+		for _, name in ipairs({
+			h.sign_comment,
+			h.sign_comment_multi_line_start,
+			h.sign_comment_multi_line_connector,
+			h.sign_comment_multi_line_end,
+		}) do
+			local def = vim.fn.sign_getdefined(name)
+			assert.is_true(#def > 0, "sign not defined: " .. name)
+		end
+	end)
+
+	it("setup installs the PRColorScheme/PRAutoRefresh/PRHeadChange/PRWinbar/PRDraftsFlush augroups per config", function()
+		-- Everything enabled → all five groups exist.
+		pr.setup({
+			winbar = { enabled = true },
+			run_on_start = { comments = false, hunks = false },
+			auto_refresh = { interval = 0, on_branch_change = true, on_head_change = true },
+		})
+		for _, g in ipairs({ "PRColorScheme", "PRDraftsFlush", "PRWinbar", "PRAutoRefresh", "PRHeadChange" }) do
+			assert.is_true(augroup_exists(g), "expected augroup " .. g)
+		end
+
+		-- Drop the config-gated groups, then setup with them disabled: only the two
+		-- unconditional groups come back.
+		for _, g in ipairs({ "PRWinbar", "PRAutoRefresh", "PRHeadChange" }) do
+			pcall(vim.api.nvim_del_augroup_by_name, g)
+		end
+		pr.setup({
+			winbar = { enabled = false },
+			run_on_start = { comments = false, hunks = false },
+			auto_refresh = SAFE_AUTO,
+		})
+		assert.is_true(augroup_exists("PRColorScheme"))
+		assert.is_true(augroup_exists("PRDraftsFlush"))
+		assert.is_false(augroup_exists("PRWinbar"), "PRWinbar should be gated off")
+		assert.is_false(augroup_exists("PRAutoRefresh"), "PRAutoRefresh should be gated off")
+		assert.is_false(augroup_exists("PRHeadChange"), "PRHeadChange should be gated off")
+	end)
+
+	it("winbar.enabled=true sets vim.wo.winbar on BufWinEnter under the git root; disabled leaves it alone", function()
+		fake.pr_number = 7
+		fake.scenario.pr_number = 7
+		fake.comments = {}
+		fake.scenario.comments = {}
+		fake.repo_info = { owner = "o", repo = "r" }
+
+		-- Anchor git_root to the buffer's actual (normalized) name so the prefix
+		-- check in apply_winbar can't be defeated by /var → /private/var resolution.
+		local buf = vim.api.nvim_create_buf(true, false)
+		vim.api.nvim_buf_set_name(buf, vim.fn.tempname() .. "/foo.lua")
+		local root = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":h")
+		fake.git_root = root
+		fake.scenario.git_root = root
+
+		pr.setup({
+			winbar = { enabled = true, format = "[PR #%d · %d unresolved]" },
+			run_on_start = { comments = false, hunks = false },
+			auto_refresh = SAFE_AUTO,
+		})
+
+		vim.api.nvim_win_set_buf(0, buf)
+		vim.cmd("doautocmd BufWinEnter")
+		assert.matches("#7", vim.wo.winbar)
+
+		-- Disabled: drop the augroup, setup with winbar off, and confirm a fresh
+		-- BufWinEnter leaves winbar untouched.
+		pcall(vim.api.nvim_del_augroup_by_name, "PRWinbar")
+		vim.wo.winbar = ""
+		pr.setup({
+			winbar = { enabled = false },
+			run_on_start = { comments = false, hunks = false },
+			auto_refresh = SAFE_AUTO,
+		})
+		assert.is_false(augroup_exists("PRWinbar"))
+
+		local buf2 = vim.api.nvim_create_buf(true, false)
+		vim.api.nvim_buf_set_name(buf2, root .. "/bar.lua")
+		vim.api.nvim_win_set_buf(0, buf2)
+		vim.cmd("doautocmd BufWinEnter")
+		assert.equals("", vim.wo.winbar)
+	end)
+
+	it("run_on_start gates comment.start/hunk.start", function()
+		-- comments only
+		pr.setup({ run_on_start = { comments = true, hunks = false }, auto_refresh = SAFE_AUTO })
+		assert.is_true(comment.enabled, "comments should start")
+		assert.is_false(hunk.enabled, "hunks should stay off")
+		comment.stop()
+		hunk.stop()
+
+		-- hunks only
+		pr.setup({ run_on_start = { comments = false, hunks = true }, auto_refresh = SAFE_AUTO })
+		assert.is_false(comment.enabled, "comments should stay off")
+		assert.is_true(hunk.enabled, "hunks should start")
+		comment.stop()
+		hunk.stop()
+
+		-- neither
+		pr.setup({ run_on_start = { comments = false, hunks = false }, auto_refresh = SAFE_AUTO })
+		assert.is_false(comment.enabled)
+		assert.is_false(hunk.enabled)
+	end)
+end)
