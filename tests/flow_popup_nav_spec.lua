@@ -109,9 +109,7 @@ describe("flow: popup + navigation", function()
 
 	after_each(function()
 		-- Drain any scheduled re-renders before wiping the popup buffers.
-		vim.wait(50, function()
-			return false
-		end)
+		env.drain(50)
 		if uninstall then
 			uninstall()
 		end
@@ -152,27 +150,88 @@ describe("flow: popup + navigation", function()
 	it("cycle_comments_in_buffer forward/backward moves the cursor between thread lines in order, wrapping", function()
 		focus_file(2)
 
-		--- Run one cycle step and return the row the cursor lands on. Waits on the
-		--- module's own "Comment N of M" notification (fired right after the cursor
-		--- is set) so the read reflects the completed async fetch.
+		--- Run one cycle step and return the row the cursor lands on plus the text
+		--- of the notification the step fired. Waits on the module's own
+		--- "Comment N of M" notification (fired right after the cursor is set) so
+		--- the read reflects the completed async fetch.
 		local function step(direction)
 			local before = #env.notifications
 			require("pr.comment").cycle_comments_in_buffer(direction)
 			env.wait_for(function()
 				return #env.notifications > before
 			end, 2000, "cycle_comments notify")
-			return vim.api.nvim_win_get_cursor(0)[1]
+			return vim.api.nvim_win_get_cursor(0)[1], env.notifications[#env.notifications].msg
 		end
 
-		-- Forward: 2 -> 5 -> 9, then wrap to the first thread.
-		assert.equals(5, step("forward"))
-		assert.equals(9, step("forward"))
-		assert.equals(2, step("forward"))
+		-- Forward: 2 -> 5 -> 9, then wrap to the first thread. The notification
+		-- indexes the DESTINATION thread (2nd of 3) so the "N of M" reads right.
+		local row, msg = step("forward")
+		assert.equals(5, row)
+		assert.equals("Comment 2 of 3", msg)
+		assert.equals(9, (step("forward")))
+		assert.equals(2, (step("forward")))
 
 		-- Backward: from the first thread wrap to the last, then 9 -> 5 -> 2.
 		assert.equals(9, step("backward"))
 		assert.equals(5, step("backward"))
 		assert.equals(2, step("backward"))
+	end)
+
+	it("cycle_comments_in_buffer with a single thread wraps to itself both directions", function()
+		-- Replace the 3-thread fixture with exactly one thread (at line 6) so both
+		-- directions fall through to the wrap branch and land back on the same
+		-- thread; the "Comment 1 of 1" notification still fires each step.
+		local git_root = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(file_buf), ":h")
+		uninstall()
+		fake, uninstall = fake_provider.install("flow_popup_nav_fake", {
+			git_root = git_root,
+			comments = {
+				[rel] = {
+					{
+						id = "SOLO",
+						is_resolved = false,
+						is_outdated = false,
+						viewer_can_reply = true,
+						viewer_can_resolve = true,
+						viewer_can_unresolve = true,
+						comments = {
+							{
+								database_id = 601,
+								author = "alice",
+								body = "lonely thread at line six",
+								updated_at = "2026-01-01T00:00:00Z",
+								viewer_can_update = false,
+								viewer_can_delete = false,
+								viewer_can_react = true,
+								start_line = 6,
+								end_line = 6,
+							},
+						},
+					},
+				},
+			},
+		})
+
+		focus_file(2)
+
+		local function step(direction)
+			local before = #env.notifications
+			require("pr.comment").cycle_comments_in_buffer(direction)
+			env.wait_for(function()
+				return #env.notifications > before
+			end, 2000, "cycle_comments notify")
+			return vim.api.nvim_win_get_cursor(0)[1], env.notifications[#env.notifications].msg
+		end
+
+		-- Forward from above the sole thread lands on it; wrapping keeps it there.
+		local row, msg = step("forward")
+		assert.equals(6, row)
+		assert.equals("Comment 1 of 1", msg)
+		assert.equals(6, (step("forward")))
+
+		-- Backward wraps onto the same single thread as well.
+		assert.equals(6, (step("backward")))
+		assert.equals(6, (step("backward")))
 	end)
 
 	it("cycle_hunks_in_buffer moves between hunk starts", function()

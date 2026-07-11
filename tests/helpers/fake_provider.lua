@@ -225,50 +225,52 @@ function M.new(scenario)
 	end)
 	def("edit_comment", function(comment_id, body, cb)
 		local _, c = find_comment(scenario, comment_id)
-		if c then
-			c.body = body
-			c.updated_at = "2026-07-11T00:00:00Z"
+		if not c then
+			error("fake edit_comment: no comment with id " .. tostring(comment_id))
 		end
+		c.body = body
+		c.updated_at = "2026-07-11T00:00:00Z"
 		if cb then
 			cb(true)
 		end
 	end)
 	def("delete_comment", function(comment_id, cb)
 		local t, _, i = find_comment(scenario, comment_id)
-		if t and i then
-			table.remove(t.comments, i)
+		if not (t and i) then
+			error("fake delete_comment: no comment with id " .. tostring(comment_id))
 		end
+		table.remove(t.comments, i)
 		if cb then
 			cb(true)
 		end
 	end)
 	def("resolve_thread", function(thread_id, cb)
 		local t = find_thread(scenario, thread_id)
-		if t then
-			t.is_resolved = true
+		if not t then
+			error("fake resolve_thread: no thread with id " .. tostring(thread_id))
 		end
+		t.is_resolved = true
 		if cb then
 			cb(true)
 		end
 	end)
 	def("unresolve_thread", function(thread_id, cb)
 		local t = find_thread(scenario, thread_id)
-		if t then
-			t.is_resolved = false
+		if not t then
+			error("fake unresolve_thread: no thread with id " .. tostring(thread_id))
 		end
+		t.is_resolved = false
 		if cb then
 			cb(true)
 		end
 	end)
 	def("refetch_comment", function(comment_id, cb)
 		local _, c = find_comment(scenario, comment_id)
-		if not cb then
-			return
+		if not c then
+			error("fake refetch_comment: no comment with id " .. tostring(comment_id))
 		end
-		if c then
+		if cb then
 			cb({ database_id = c.database_id, body = c.body, updated_at = c.updated_at })
-		else
-			cb(nil)
 		end
 	end)
 
@@ -277,30 +279,34 @@ function M.new(scenario)
 	-- ---------------------------------------------------------------------
 	def("add_reaction", function(comment_id, reaction_key, cb)
 		local _, c = find_comment(scenario, comment_id)
-		if c then
-			c.reaction_groups = c.reaction_groups or {}
-			local group
-			for _, g in ipairs(c.reaction_groups) do
-				if g.content == reaction_key then
-					group = g
-				end
-			end
-			if not group then
-				group = { content = reaction_key, viewerHasReacted = false, reactors = { totalCount = 0, nodes = {} } }
-				table.insert(c.reaction_groups, group)
-			end
-			group.viewerHasReacted = true
-			next_id = next_id + 1
-			table.insert(group.reactors.nodes, { database_id = next_id, content = reaction_key, user = scenario.git_user })
-			group.reactors.totalCount = #group.reactors.nodes
+		if not c then
+			error("fake add_reaction: no comment with id " .. tostring(comment_id))
 		end
+		c.reaction_groups = c.reaction_groups or {}
+		local group
+		for _, g in ipairs(c.reaction_groups) do
+			if g.content == reaction_key then
+				group = g
+			end
+		end
+		if not group then
+			group = { content = reaction_key, viewerHasReacted = false, reactors = { totalCount = 0, nodes = {} } }
+			table.insert(c.reaction_groups, group)
+		end
+		group.viewerHasReacted = true
+		next_id = next_id + 1
+		table.insert(group.reactors.nodes, { database_id = next_id, content = reaction_key, user = scenario.git_user })
+		group.reactors.totalCount = #group.reactors.nodes
 		if cb then
 			cb(true)
 		end
 	end)
 	def("remove_reaction", function(comment_id, reaction_id, cb)
 		local _, c = find_comment(scenario, comment_id)
-		if c and c.reaction_groups then
+		if not c then
+			error("fake remove_reaction: no comment with id " .. tostring(comment_id))
+		end
+		if c.reaction_groups then
 			for gi = #c.reaction_groups, 1, -1 do
 				local group = c.reaction_groups[gi]
 				local nodes = group.reactors and group.reactors.nodes or {}

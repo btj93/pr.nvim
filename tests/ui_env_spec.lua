@@ -8,9 +8,10 @@ end
 local ui_env = require("helpers.ui_env")
 local fake_provider = require("helpers.fake_provider")
 
--- make_comments_layout returns only the NuiLayout (verified in lua/pr/ui.lua:514
--- + :996), so the comments popup buffer is located by scanning open floats for
--- the rendered body text rather than a returned handle.
+-- make_comments_layout returns `layout, comments_popup, new_reply_popup`, but
+-- this exemplar deliberately locates the comments popup buffer by scanning open
+-- floats for the rendered body text (rather than the returned handle) to model
+-- the float-scanning pattern other flow specs reuse.
 local function find_float_with(env, needle)
 	for _, win in ipairs(env.floats()) do
 		local buf = vim.api.nvim_win_get_buf(win)

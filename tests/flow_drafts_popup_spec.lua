@@ -78,9 +78,7 @@ describe("flow: drafts popup lifecycle", function()
 	after_each(function()
 		-- Drain any scheduled callbacks while buffers are still alive so teardown's
 		-- buffer wipe can't race an in-flight re-render.
-		vim.wait(100, function()
-			return false
-		end)
+		env.drain()
 		uninstall()
 		env.teardown()
 	end)

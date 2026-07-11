@@ -64,9 +64,7 @@ describe("flow: quickfix dump", function()
 	end)
 
 	after_each(function()
-		vim.wait(30, function()
-			return false
-		end)
+		env.drain(30)
 		if uninstall then
 			uninstall()
 		end

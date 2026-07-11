@@ -34,9 +34,7 @@ describe("flow: pr_list.checkout", function()
 
 	after_each(function()
 		pr._check_branch_and_refresh = saved_recheck
-		vim.wait(50, function()
-			return false
-		end)
+		env.drain(50)
 		uninstall()
 		env.teardown()
 	end)

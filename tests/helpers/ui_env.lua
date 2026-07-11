@@ -65,6 +65,18 @@ function M.setup(opts) -- luacheck: no unused args
 		assert(ok, "wait_for timed out" .. (label and (": " .. label) or ""))
 	end
 
+	--- TEARDOWN-ONLY. Spins the event loop for `ms` (default 100) with a
+	--- constant-false predicate so any scheduled provider callbacks / re-renders
+	--- drain while the popup buffers are still alive — this keeps teardown's
+	--- buffer-wipe (which triggers nui's auto-unmount) from racing a pending
+	--- re-render. NEVER use this to await an observable effect in a test body;
+	--- use env.wait_for(pred, ...) for that.
+	function env.drain(ms)
+		vim.wait(ms or 100, function()
+			return false
+		end)
+	end
+
 	function env.floats()
 		local out = {}
 		for _, win in ipairs(vim.api.nvim_list_wins()) do

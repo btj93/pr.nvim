@@ -213,7 +213,7 @@ Three helpers back the flow specs; each installs cleanly and restores on teardow
 3. **Mount** the real UI (e.g. `local layout, comments_popup, new_reply_popup = ui.make_comments_layout(thread, relative_path)` then `layout:mount()`), and **`env.wait_for`** until the expected rendered text appears in the popup buffer — never assert immediately after mount, render is scheduled.
 4. **`env.feed`** the real keymap (`<CR>`, `r`, `a`, ...) — or set the buffer lines and focus the target window first.
 5. **`env.wait_for`** on the observable effect: `fake_provider.called(fake, "reply")`, a mutated `scenario`, or re-rendered text — then **assert** the recorded call args / final state.
-6. `after_each`: drain any scheduled re-render (`vim.wait(100, function() return false end)`) **before** `uninstall()` + `env.teardown()`, so nui's buffer-wipe auto-unmount can't race a pending re-render.
+6. `after_each`: drain any scheduled re-render with `env.drain(ms?=100)` — the **teardown-only** loop-spin helper (a constant-false `vim.wait`); never use it to await an observable effect in a test body, that's what `env.wait_for` is for — **before** `uninstall()` + `env.teardown()`, so nui's buffer-wipe auto-unmount can't race a pending re-render.
 
 ### Calling `pr.setup()` in a spec (danger)
 

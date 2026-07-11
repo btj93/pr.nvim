@@ -40,9 +40,7 @@ describe("flow: emoji reactions + delete", function()
 		-- Drain those callbacks while the popup buffers are still alive so
 		-- teardown's buffer wipe (which triggers nui's auto-unmount) can't race a
 		-- re-render against an already-torn-down buffer.
-		vim.wait(100, function()
-			return false
-		end)
+		env.drain()
 		uninstall()
 		env.teardown()
 	end)

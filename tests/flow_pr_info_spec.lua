@@ -100,9 +100,7 @@ describe("flow: :PRInfo view / edit", function()
 
 	after_each(function()
 		-- Drain scheduled metadata/checks callbacks before teardown wipes buffers.
-		vim.wait(100, function()
-			return false
-		end)
+		env.drain()
 		uninstall()
 		env.teardown()
 	end)

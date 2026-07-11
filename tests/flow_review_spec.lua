@@ -57,9 +57,7 @@ describe("flow: :PRReview submit / discard", function()
 	after_each(function()
 		-- Drain scheduled submit/discard callbacks while the popup buffers are
 		-- still alive so teardown's buffer wipe can't race a late callback.
-		vim.wait(100, function()
-			return false
-		end)
+		env.drain()
 		uninstall()
 		env.teardown()
 	end)

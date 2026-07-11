@@ -45,9 +45,7 @@ describe("flow: new comment via visual selection", function()
 		-- A successful submit/queue schedules async provider work + a layout
 		-- unmount. Drain those callbacks while buffers are still alive so
 		-- teardown's buffer wipe can't race an in-flight callback.
-		vim.wait(100, function()
-			return false
-		end)
+		env.drain()
 		require("pr.drift").invalidate_all()
 		uninstall()
 		env.teardown()

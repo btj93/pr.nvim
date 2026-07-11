@@ -101,7 +101,9 @@ describe("provider contract", function()
 		end
 		for i, entry in ipairs(fake.reaction_palette) do
 			assert.equals("string", type(entry.content), "fake palette[" .. i .. "].content not a string")
+			assert.equals(entry.content, string.upper(entry.content), "fake palette[" .. i .. "].content not uppercase")
 			assert.equals("string", type(entry.glyph), "fake palette[" .. i .. "].glyph not a string")
+			assert.is_true(#entry.glyph > 0, "fake palette[" .. i .. "].glyph is empty")
 		end
 	end)
 end)

@@ -32,9 +32,7 @@ describe("flow: resolve / unresolve via r", function()
 		-- Drain those callbacks while the popup buffers are still alive so
 		-- teardown's buffer wipe (which triggers nui's auto-unmount) can't race a
 		-- re-render against an already-torn-down buffer.
-		vim.wait(100, function()
-			return false
-		end)
+		env.drain()
 		uninstall()
 		env.teardown()
 	end)
@@ -92,6 +90,7 @@ describe("flow: resolve / unresolve via r", function()
 			return called(fake, "resolve_thread") ~= nil
 		end, 2000, "resolve")
 		assert.is_nil(called(fake, "unresolve_thread"))
+		assert.equals("T1", called(fake, "resolve_thread").args[1])
 	end)
 
 	it("r on a resolved thread calls unresolve_thread (can_perform collision gate)", function()
@@ -103,5 +102,36 @@ describe("flow: resolve / unresolve via r", function()
 			return called(fake, "unresolve_thread") ~= nil
 		end, 2000, "unresolve")
 		assert.is_nil(called(fake, "resolve_thread"))
+		assert.equals("T1", called(fake, "unresolve_thread").args[1])
+	end)
+
+	it("firing a deferred re-fetch after the popup unmounts does not crash refresh_thread", function()
+		-- Regression: refresh_thread's scheduled get_comments callback guards on
+		-- vim.api.nvim_buf_is_valid(comments_popup.bufnr). nui's unmount() sets
+		-- bufnr = nil, and nvim_buf_is_valid(nil) is a type error. This exercises
+		-- the post-unmount race: resolve schedules refresh_thread, we unmount, then
+		-- the re-fetch fires against a dead popup buffer.
+		local comments_popup = mount_with({ is_resolved = false, viewer_can_resolve = true, viewer_can_unresolve = true })
+
+		-- Capture the re-fetch that refresh_thread triggers so we can unmount first.
+		fake.deferred.get_comments = true
+
+		env.feed("r")
+		env.wait_for(function()
+			return #fake._captured > 0
+		end, 2000, "refresh_thread captured get_comments")
+
+		-- Quit the layout; nui nils out comments_popup.bufnr on unmount.
+		env.feed("q")
+		env.wait_for(function()
+			return comments_popup.bufnr == nil or not vim.api.nvim_buf_is_valid(comments_popup.bufnr)
+		end, 2000, "popup unmounted")
+
+		-- Fire the deferred re-fetch: the scheduled callback runs with a dead
+		-- popup. vim.v.errmsg captures errors raised inside vim.schedule_wrap.
+		vim.v.errmsg = ""
+		fake.fire("get_comments")
+		env.drain()
+		assert.equals("", vim.v.errmsg, "refresh_thread crashed after unmount: " .. vim.v.errmsg)
 	end)
 end)
