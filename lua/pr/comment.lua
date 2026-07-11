@@ -138,29 +138,48 @@ function M.cycle_comments_in_buffer(direction, relative_path, line)
 				return
 			end
 
-			local before_line = nil
-			local after_line = nil
-			local before_index = nil
-			local after_index = nil
-			for i, thread in ipairs(comments) do
-				local _, first_comment = next(thread.comments)
-				if first_comment then
-					if first_comment.start_line < line then
-						before_line = first_comment.start_line
-						before_index = i
-					else
-						after_line = first_comment.start_line
-						after_index = i
+			-- Threads arrive in ascending start-line order (see CLAUDE.md). Forward
+			-- goes to the nearest thread strictly below the cursor and wraps around
+			-- to the first; backward goes to the nearest strictly above and wraps
+			-- around to the last.
+			local target_line = nil
+			local target_index = nil
+			if direction == "forward" then
+				for i, thread in ipairs(comments) do
+					local _, first_comment = next(thread.comments)
+					if first_comment and first_comment.start_line > line then
+						target_line = first_comment.start_line
+						target_index = i
+						break
+					end
+				end
+				if not target_line then
+					local _, first_comment = next(comments[1].comments)
+					if first_comment then
+						target_line = first_comment.start_line
+						target_index = 1
+					end
+				end
+			elseif direction == "backward" then
+				for i, thread in ipairs(comments) do
+					local _, first_comment = next(thread.comments)
+					if first_comment and first_comment.start_line < line then
+						target_line = first_comment.start_line
+						target_index = i
+					end
+				end
+				if not target_line then
+					local _, first_comment = next(comments[#comments].comments)
+					if first_comment then
+						target_line = first_comment.start_line
+						target_index = #comments
 					end
 				end
 			end
 
-			if direction == "forward" then
-				vim.api.nvim_win_set_cursor(0, { after_line or before_line, 0 })
-				vim.notify("Comment " .. (after_index or before_index) .. " of " .. #comments)
-			elseif direction == "backward" then
-				vim.api.nvim_win_set_cursor(0, { before_line or after_line, 0 })
-				vim.notify("Comment " .. (before_index or after_index) .. " of " .. #comments)
+			if target_line then
+				vim.api.nvim_win_set_cursor(0, { target_line, 0 })
+				vim.notify("Comment " .. target_index .. " of " .. #comments)
 			end
 		end))
 	end))

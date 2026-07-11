@@ -92,26 +92,40 @@ function M.cycle_hunks_in_buffer(direction, relative_path, line)
 				return
 			end
 
-			local before_line = nil
-			local after_line = nil
-			local before_index = nil
-			local after_index = nil
-			for i, hunk in ipairs(hunks) do
-				if hunk.hunk_start < line then
-					before_line = hunk.hunk_start
-					before_index = i
-				else
-					after_line = hunk.hunk_start
-					after_index = i
+			-- Hunks arrive in ascending start-line order (see CLAUDE.md). Forward
+			-- goes to the nearest hunk strictly below the cursor and wraps around to
+			-- the first; backward goes to the nearest strictly above and wraps
+			-- around to the last.
+			local target_line = nil
+			local target_index = nil
+			if direction == "forward" then
+				for i, hunk in ipairs(hunks) do
+					if hunk.hunk_start > line then
+						target_line = hunk.hunk_start
+						target_index = i
+						break
+					end
+				end
+				if not target_line then
+					target_line = hunks[1].hunk_start
+					target_index = 1
+				end
+			elseif direction == "backward" then
+				for i, hunk in ipairs(hunks) do
+					if hunk.hunk_start < line then
+						target_line = hunk.hunk_start
+						target_index = i
+					end
+				end
+				if not target_line then
+					target_line = hunks[#hunks].hunk_start
+					target_index = #hunks
 				end
 			end
 
-			if direction == "forward" then
-				vim.api.nvim_win_set_cursor(0, { after_line or before_line, 0 })
-				vim.notify("PR Hunk " .. (after_index or before_index) .. " of " .. #hunks)
-			elseif direction == "backward" then
-				vim.api.nvim_win_set_cursor(0, { before_line or after_line, 0 })
-				vim.notify("PR Hunk " .. (before_index or after_index) .. " of " .. #hunks)
+			if target_line then
+				vim.api.nvim_win_set_cursor(0, { target_line, 0 })
+				vim.notify("PR Hunk " .. target_index .. " of " .. #hunks)
 			end
 		end))
 	end))
