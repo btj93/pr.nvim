@@ -233,11 +233,12 @@ end
 
 --- Compute the bottom-border-style hint string for one comment, mirroring
 --- `get_popup_hints` but as a single pre-formatted string suitable for virt_text.
+--- Exported (`M._compute_hint_text`) so it can be unit-tested directly.
 ---@param thread ReviewThread
 ---@param comment CommentInfo
 ---@param mode string
 ---@return string
-local function compute_hint_text(thread, comment, mode)
+function M._compute_hint_text(thread, comment, mode)
 	local parts = {}
 	for _, action in pairs(M.actions or {}) do
 		if action.mode == mode and action.show_hint and action.can_perform and action.can_perform(thread, comment) then
@@ -721,7 +722,7 @@ function M.make_comments_layout(thread, relative_path)
 			return
 		end
 		local mode = vim.api.nvim_get_mode().mode
-		local text = compute_hint_text(thread, comment, mode)
+		local text = M._compute_hint_text(thread, comment, mode)
 		if text == "" then
 			return
 		end
