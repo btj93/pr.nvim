@@ -12,6 +12,10 @@ local last_branch = nil
 local last_git_root = nil
 local last_head = nil
 
+-- Set true the first time M.setup() runs (whether the user called it or the
+-- plugin/pr.lua bootstrap stubs auto-triggered it via M._ensure_setup()).
+local did_setup = false
+
 --- Asynchronously read the current branch name. Invokes callback with the branch string,
 --- or nil if not in a git repo or the command fails.
 local function get_current_branch(callback)
@@ -159,8 +163,165 @@ function M.popup(relative_path, line)
 	end))
 end
 
+-- Single source of truth for every :PR* user command: name, opts, and behavior.
+-- Both M.setup() (which registers the real commands via register_commands) and
+-- plugin/pr.lua (whose bootstrap stubs re-dispatch through M._dispatch) reference
+-- this one table, so a command's arg spec and body live in exactly one place.
+local COMMANDS = {
+	{
+		name = "PRRefresh",
+		opts = { desc = "Refresh PR comments and hunks" },
+		run = function()
+			M.refresh()
+		end,
+	},
+	{
+		name = "PRComment",
+		opts = { desc = "Open the review-thread popup for the comment under the cursor" },
+		run = function()
+			M.popup()
+		end,
+	},
+	{
+		name = "PRList",
+		opts = {
+			nargs = "?",
+			complete = function()
+				return require("pr.pickers.filter").PR_FILTERS
+			end,
+			desc = "List PRs [mine|assigned|review-requested|all] and switch into one",
+		},
+		run = function(arg)
+			local pick_opts = nil
+			if arg.args and arg.args ~= "" then
+				pick_opts = { filter = arg.args }
+			end
+			require("pr.picker").pick_prs(pick_opts)
+		end,
+	},
+	{
+		name = "PRInfo",
+		opts = {
+			nargs = "?",
+			complete = function()
+				return { "edit" }
+			end,
+			desc = "Show or edit PR info",
+		},
+		run = function(arg)
+			require("pr.pr_info").show(arg.args == "edit" and "edit" or "view")
+		end,
+	},
+	{
+		name = "PRReview",
+		opts = { desc = "Open pending review for submission" },
+		run = function()
+			require("pr.review").show()
+		end,
+	},
+	{
+		name = "PRReviewDiscard",
+		opts = { desc = "Discard pending review" },
+		run = function()
+			require("pr.review")._discard()
+		end,
+	},
+	{
+		name = "PRSuggest",
+		opts = {
+			range = true,
+			desc = "Open a new-comment popup wrapping the visual selection as a suggestion",
+		},
+		run = function()
+			require("pr.suggestion").comment_with_suggestion()
+		end,
+	},
+	{
+		name = "PRQuickfix",
+		opts = {
+			nargs = "?",
+			complete = function()
+				return { "unresolved", "outdated", "all", "file" }
+			end,
+			desc = "Dump PR threads to quickfix",
+		},
+		run = function(arg)
+			local kind = arg.args
+			if kind == "" then
+				kind = "unresolved"
+			end
+			require("pr.quickfix").dump({ kind = kind })
+		end,
+	},
+	{
+		name = "PRRefreshUsers",
+		opts = { desc = "Clear cached collaborators (forces re-fetch on next completion)" },
+		run = function()
+			local g = provider.get_provider()
+			if type(g.clear_collaborators) == "function" then
+				g.clear_collaborators()
+			end
+			pcall(function()
+				require("pr.completion")._clear_collaborators()
+			end)
+			vim.notify("PR: collaborator cache cleared")
+		end,
+	},
+	{
+		name = "PRRefreshIssues",
+		opts = { desc = "Clear cached issues + PRs (forces re-fetch on next completion)" },
+		run = function()
+			local g = provider.get_provider()
+			if type(g.clear_issues) == "function" then
+				g.clear_issues()
+			end
+			pcall(function()
+				require("pr.completion")._clear_issues()
+			end)
+			vim.notify("PR: issue cache cleared")
+		end,
+	},
+}
+
+--- Register every user command from COMMANDS. Idempotent: nvim_create_user_command
+--- overwrites an existing command silently, so re-running setup() (or overwriting
+--- plugin/pr.lua's bootstrap stubs) is safe.
+local function register_commands()
+	for _, cmd in ipairs(COMMANDS) do
+		vim.api.nvim_create_user_command(cmd.name, function(a)
+			cmd.run(a)
+		end, cmd.opts)
+	end
+end
+M._register_commands = register_commands
+
+--- Run the behavior of command `name`, passing the parsed command-args table `a`
+--- straight through. Used by plugin/pr.lua's bootstrap stubs to execute the
+--- original invocation once, after auto-setup has installed the real commands.
+---@param name string
+---@param a table
+function M._dispatch(name, a)
+	for _, cmd in ipairs(COMMANDS) do
+		if cmd.name == name then
+			return cmd.run(a)
+		end
+	end
+end
+
+--- Auto-run setup({}) with defaults exactly once, iff the user never called
+--- setup() themselves. Invoked from plugin/pr.lua's bootstrap command stubs so a
+--- bare `:PR*` works out of the box. A later explicit setup(opts) still runs and
+--- re-merges config (config.setup merges into the live opts, so defaults aren't
+--- clobbered).
+function M._ensure_setup()
+	if not did_setup then
+		M.setup({})
+	end
+end
+
 -- A single setup function for signs and highlights
 function M.setup(opts)
+	did_setup = true
 	config.setup(opts)
 
 	-- vim.fn.sign_define(sign_add, { text = "+", texthl = "DiffAdd" })
@@ -196,84 +357,7 @@ function M.setup(opts)
 	comment.setup()
 	hunk.setup()
 
-	vim.api.nvim_create_user_command("PRRefresh", function()
-		M.refresh()
-	end, { desc = "Refresh PR comments and hunks" })
-
-	vim.api.nvim_create_user_command("PRList", function(arg)
-		local pick_opts = nil
-		if arg.args and arg.args ~= "" then
-			pick_opts = { filter = arg.args }
-		end
-		require("pr.picker").pick_prs(pick_opts)
-	end, {
-		nargs = "?",
-		complete = function()
-			return require("pr.pickers.filter").PR_FILTERS
-		end,
-		desc = "List PRs [mine|assigned|review-requested|all] and switch into one",
-	})
-
-	vim.api.nvim_create_user_command("PRInfo", function(arg)
-		require("pr.pr_info").show(arg.args == "edit" and "edit" or "view")
-	end, {
-		nargs = "?",
-		complete = function()
-			return { "edit" }
-		end,
-		desc = "Show or edit PR info",
-	})
-
-	vim.api.nvim_create_user_command("PRReview", function()
-		require("pr.review").show()
-	end, { desc = "Open pending review for submission" })
-
-	vim.api.nvim_create_user_command("PRReviewDiscard", function()
-		require("pr.review")._discard()
-	end, { desc = "Discard pending review" })
-
-	vim.api.nvim_create_user_command("PRSuggest", function()
-		require("pr.suggestion").comment_with_suggestion()
-	end, {
-		range = true,
-		desc = "Open a new-comment popup wrapping the visual selection as a suggestion",
-	})
-
-	vim.api.nvim_create_user_command("PRQuickfix", function(arg)
-		local kind = arg.args
-		if kind == "" then
-			kind = "unresolved"
-		end
-		require("pr.quickfix").dump({ kind = kind })
-	end, {
-		nargs = "?",
-		complete = function()
-			return { "unresolved", "outdated", "all", "file" }
-		end,
-		desc = "Dump PR threads to quickfix",
-	})
-
-	vim.api.nvim_create_user_command("PRRefreshUsers", function()
-		local g = provider.get_provider()
-		if type(g.clear_collaborators) == "function" then
-			g.clear_collaborators()
-		end
-		pcall(function()
-			require("pr.completion")._clear_collaborators()
-		end)
-		vim.notify("PR: collaborator cache cleared")
-	end, { desc = "Clear cached collaborators (forces re-fetch on next completion)" })
-
-	vim.api.nvim_create_user_command("PRRefreshIssues", function()
-		local g = provider.get_provider()
-		if type(g.clear_issues) == "function" then
-			g.clear_issues()
-		end
-		pcall(function()
-			require("pr.completion")._clear_issues()
-		end)
-		vim.notify("PR: issue cache cleared")
-	end, { desc = "Clear cached issues + PRs (forces re-fetch on next completion)" })
+	register_commands()
 
 	-- Flush any debounced draft writes on quit so unsaved keystrokes persist.
 	vim.api.nvim_create_autocmd("VimLeavePre", {
