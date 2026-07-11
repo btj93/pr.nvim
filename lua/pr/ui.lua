@@ -510,7 +510,7 @@ end
 ---
 ---@param thread ReviewThread
 ---@param relative_path string?  -- path of the file the thread anchors to (when known)
----@return NuiLayout
+---@return NuiLayout layout, NuiPopup comments_popup, NuiPopup new_reply_popup
 function M.make_comments_layout(thread, relative_path)
 	git.get_git_user()
 	-- Capture the source buffer BEFORE any popup mounts steal focus. The <C-r>
@@ -993,7 +993,7 @@ function M.make_comments_layout(thread, relative_path)
 		end
 	end
 
-	return layout
+	return layout, comments_popup, new_reply_popup
 end
 
 ---
