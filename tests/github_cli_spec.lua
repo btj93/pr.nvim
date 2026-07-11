@@ -474,8 +474,7 @@ describe("github provider through real CLI plumbing", function()
 		shim.stub("gh", { { match = { "pr", "checkout", "7" } } })
 
 		-- Spy vim.cmd so we can prove the success path ran `checktime` (its buffer
-		-- reload) without staging an on-disk change. Restored before any assert so
-		-- a failing assertion can't leave the global wrapped for after_each's cd.
+		-- reload) without staging an on-disk change.
 		local saved_cmd = vim.cmd
 		local checktime_called = false
 		vim.cmd = function(c)
@@ -489,19 +488,27 @@ describe("github provider through real CLI plumbing", function()
 		gh.checkout_pr(7, function(ok, err)
 			success, err_val, done = ok, err, true
 		end)
-		wait_for(function()
-			return done
-		end, "checkout_pr cb")
 
+		-- Run the wait + asserts under pcall: wait_for raises on timeout, so an
+		-- unguarded failure here would leave vim.cmd wrapped and break after_each's
+		-- cd. Restore unconditionally, then re-raise the captured error.
+		local pok, perr = pcall(function()
+			wait_for(function()
+				return done
+			end, "checkout_pr cb")
+
+			assert.is_true(success)
+			assert.is_nil(err_val)
+			assert.is_true(checktime_called)
+			-- Exact argv: no stray tokens leak into `gh pr checkout`.
+			assert.same({ "pr", "checkout", "7" }, shim.calls("gh")[1])
+			-- The success path emits no error notification.
+			assert.equals(0, #notifications)
+		end)
 		vim.cmd = saved_cmd
-
-		assert.is_true(success)
-		assert.is_nil(err_val)
-		assert.is_true(checktime_called)
-		-- Exact argv: no stray tokens leak into `gh pr checkout`.
-		assert.same({ "pr", "checkout", "7" }, shim.calls("gh")[1])
-		-- The success path emits no error notification.
-		assert.equals(0, #notifications)
+		if not pok then
+			error(perr, 0)
+		end
 	end)
 
 	it("get_pr_number surfaces the install hint on unexpected gh output", function()

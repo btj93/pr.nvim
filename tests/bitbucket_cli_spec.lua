@@ -285,12 +285,18 @@ describe("bitbucket provider through real CLI plumbing", function()
 		-- run_curl's non-zero branch: a 401/403 in stderr routes to the auth hint
 		-- rather than the generic reachability message.
 		local found = false
+		local reachability_msg
 		for _, m in ipairs(notify_msgs()) do
 			if tostring(m):find("Bitbucket auth failed", 1, true) then
 				found = true
 			end
+			-- The else-branch reachability message (run_curl) must NOT fire on a 401.
+			if tostring(m):find("Is curl installed and api.bitbucket.org reachable?", 1, true) then
+				reachability_msg = m
+			end
 		end
 		assert.is_true(found, "expected the Bitbucket auth-failed notification")
+		assert.is_nil(reachability_msg, "generic reachability message must not fire on a 401")
 	end)
 
 	it("checkout_pr fetches + checks out a branch that lives only in the bare origin", function()
@@ -324,8 +330,7 @@ describe("bitbucket provider through real CLI plumbing", function()
 			{ match = { "/pullrequests/7" }, stdout = '{"source":{"branch":{"name":"' .. BRANCH .. '"}}}' },
 		})
 
-		-- Spy vim.cmd to prove the success path ran `checktime`. Restored before
-		-- any assert so a failure can't leave the global wrapped for after_each.
+		-- Spy vim.cmd to prove the success path ran `checktime`.
 		local saved_cmd = vim.cmd
 		local checktime_called = false
 		vim.cmd = function(c)
@@ -339,17 +344,25 @@ describe("bitbucket provider through real CLI plumbing", function()
 		bb.checkout_pr(7, function(ok, err)
 			success, err_val, done = ok, err, true
 		end)
-		wait_for(function()
-			return done
-		end, "checkout_pr cb")
 
+		-- Run the wait + asserts under pcall: wait_for raises on timeout, so an
+		-- unguarded failure here would leave vim.cmd wrapped and break after_each's
+		-- cd. Restore unconditionally, then re-raise the captured error.
+		local pok, perr = pcall(function()
+			wait_for(function()
+				return done
+			end, "checkout_pr cb")
+
+			assert.is_true(success)
+			assert.is_nil(err_val)
+			assert.is_true(checktime_called)
+			-- The real checkout moved HEAD onto the fetched branch.
+			assert.equals(BRANCH, repo.git("rev-parse", "--abbrev-ref", "HEAD"))
+			assert.equals(1, vim.fn.filereadable(repo.root .. "/marker.txt"))
+		end)
 		vim.cmd = saved_cmd
-
-		assert.is_true(success)
-		assert.is_nil(err_val)
-		assert.is_true(checktime_called)
-		-- The real checkout moved HEAD onto the fetched branch.
-		assert.equals(BRANCH, repo.git("rev-parse", "--abbrev-ref", "HEAD"))
-		assert.equals(1, vim.fn.filereadable(repo.root .. "/marker.txt"))
+		if not pok then
+			error(perr, 0)
+		end
 	end)
 end)
