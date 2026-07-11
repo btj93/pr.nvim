@@ -14,6 +14,9 @@ tags
 tags.lock
 tags.temp
 
+# generated vimdoc helptags (doc/pr.txt is committed; its tags file is not)
+doc/tags
+
 # Test artifacts
 /tmp/
 

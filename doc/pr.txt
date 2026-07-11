@@ -1,0 +1,449 @@
+*pr.txt*  PR review comments and diff hunks inline in Neovim
+
+Author:   btj93  <https://github.com/btj93/pr.nvim>
+License:  see repository
+
+==============================================================================
+CONTENTS                                                         *pr-contents*
+
+  1. Introduction and Requirements ..................................|pr.nvim|
+  2. Setup .........................................................|pr-setup|
+  3. Commands ...................................................|pr-commands|
+  4. Keymaps .....................................................|pr-keymaps|
+  5. Providers .................................................|pr-providers|
+  6. Events .......................................................|pr-events|
+  7. Lua API .........................................................|pr-api|
+  8. Health .......................................................|pr-health|
+
+==============================================================================
+1. Introduction and Requirements                                     *pr.nvim*
+
+pr.nvim surfaces pull-request review comments and diff hunks inline in
+your buffers, and provides floating-window UI for reading, replying,
+reviewing, and editing threads. It supports GitHub, GitLab, and
+Bitbucket Cloud. All platform API work is done by shelling out to the
+provider CLI (gh / glab / curl) or git; pr.nvim never calls HTTPS
+directly.
+
+Requirements                                                 *pr-requirements*
+
+Neovim 0.10 or newer is required (pr.nvim relies on 0.10 APIs such as
+vim.ui.open and vim.diagnostic). :checkhealth pr asserts this.
+
+Runtime plugin dependencies:
+    nui.nvim       UI primitives (popups, layouts, menus)
+    plenary.nvim   async subprocess handling (plenary.job)
+
+Provider CLI (install the one matching your `provider`):
+>
+    provider     provider=       CLI     Authenticate
+    GitHub       "github"        gh      gh auth login
+    GitLab       "gitlab"        glab    glab auth login
+    Bitbucket    "bitbucket"     curl    BITBUCKET_USERNAME +
+                                         BITBUCKET_APP_PASSWORD env vars,
+                                         or a ~/.netrc entry for
+                                         machine api.bitbucket.org
+<
+`git` is also required by every provider. glab needs >= 1.21 for its
+GraphQL support. Bitbucket needs an app password (the account password
+will not work); Bitbucket Server / Data Center is not supported.
+
+Picker (install the one matching your `picker`, default "snacks"):
+>
+    picker       picker=         Plugin
+    Snacks       "snacks"        snacks.nvim   (default)
+    Telescope    "telescope"     telescope.nvim
+    fzf-lua      "fzf"           fzf-lua
+<
+==============================================================================
+2. Setup                                                            *pr-setup*
+
+Call require("pr").setup({}) (or pass `opts` via lazy.nvim). Options are
+deep-merged over the defaults, so you only specify what you change. The
+full default table, verbatim from lua/pr/config.lua:
+>
+    require("pr").setup({
+      provider = "github",        -- "github" | "gitlab" | "bitbucket"
+      picker = "snacks",          -- "snacks" | "telescope" | "fzf"
+      sign = "󰅺",                 -- signcolumn glyph for a comment
+      multi_line_sign = {         -- glyphs for a multi-line thread
+        start_line = "┌",
+        connector = "│",
+        end_line = "└",
+      },
+      debug = false,
+      run_on_start = {            -- what to enable at setup() time
+        comments = true,
+        hunks = false,
+      },
+      show_outdated_inline = false,
+      show_resolved_inline = false,
+      diagnostics = { ... },      -- see |pr-setup-diagnostics|
+      auto_refresh = { ... },     -- see |pr-setup-auto_refresh|
+      drafts = { ... },           -- see |pr-setup-drafts|
+      conflict_detection = { ... },  -- see |pr-setup-conflict_detection|
+      winbar = { ... },           -- see |pr-setup-winbar|
+      completion = { ... },       -- see |pr-setup-completion|
+      colors = { ... },           -- see |pr-setup-colors|
+      highlights = { ... },       -- see |pr-setup-highlights|
+    })
+<
+Scalar options ~
+
+provider          Backend: "github" (default), "gitlab", "bitbucket".
+picker            Picker backend: "snacks" (default), "telescope", "fzf".
+sign              Signcolumn glyph placed on a commented line. Default "󰅺".
+multi_line_sign   Glyphs drawn down the gutter for a multi-line thread:
+                  start_line "┌", connector "│", end_line "└".
+debug             Extra debug logging. Default false.
+run_on_start      Which features attach at setup() time.
+                  comments = true, hunks = false (defaults).
+show_outdated_inline
+                  Show outdated threads inline (signs + diagnostics).
+                  Default false: GitHub reports their line numbers
+                  against the commit the comment was made on, so they
+                  may no longer map to the current buffer. Outdated
+                  threads stay reachable via the popup and picker
+                  filters. Unified knob: diagnostics.include_outdated
+                  falls back to this when nil.
+show_resolved_inline
+                  Show resolved threads inline. Default false. When
+                  true they publish at diagnostics.severity_resolved
+                  (INFO). Unified knob: diagnostics.include_resolved
+                  falls back to this when nil.
+
+diagnostics                                             *pr-setup-diagnostics*
+Publish unresolved (and, when enabled, resolved/outdated) threads as
+vim.diagnostic entries so trouble.nvim, lsp_lines, :Telescope
+diagnostics, etc. pick them up. Defaults:
+>
+    diagnostics = {
+      enabled = true,
+      severity = vim.diagnostic.severity.HINT,
+      severity_resolved = vim.diagnostic.severity.INFO,
+      include_resolved = nil,   -- nil = follow show_resolved_inline
+      include_outdated = nil,   -- nil = follow show_outdated_inline
+      source = "PR",
+    }
+<
+auto_refresh                                           *pr-setup-auto_refresh*
+Automatic refresh triggers. Defaults:
+>
+    auto_refresh = {
+      on_branch_change = true,  -- refresh on FocusGained/DirChanged
+                                -- when the branch changed
+      on_head_change = true,    -- refresh on BufWritePost when HEAD moved
+      interval = 300,           -- periodic refresh seconds; 0 disables
+    }
+<
+The periodic timer only fires while comments or hunks are enabled.
+Change the interval at runtime with require("pr").set_refresh_interval().
+
+drafts                                                       *pr-setup-drafts*
+Persist in-progress comment bodies (edits, new comments, replies) so a
+crash doesn't lose work. Defaults:
+>
+    drafts = {
+      enabled = true,
+      path = nil,   -- nil = stdpath('data')/pr.nvim/drafts.json
+    }
+<
+Set enabled = false to make all draft save/load a no-op.
+
+conflict_detection                               *pr-setup-conflict_detection*
+Before committing an in-place edit, re-fetch the comment's freshest
+state and prompt if it changed remotely (Overwrite / Refresh / Abort,
+default Abort). Defaults:
+>
+    conflict_detection = {
+      enabled = true,   -- false = skip the refetch (faster, riskier)
+    }
+<
+Only effective on providers exposing refetch_comment (github; see
+|pr-providers|).
+
+winbar                                                       *pr-setup-winbar*
+Optional built-in winbar showing the PR number and per-buffer
+unresolved count on buffers under the git root. Off by default; most
+users drive winbar via their own plugin and call require("pr").winbar().
+>
+    winbar = {
+      enabled = false,
+      format = "[PR #%d · %d unresolved]",  -- 1st %d pr#, 2nd unresolved
+    }
+<
+completion                                               *pr-setup-completion*
+Omnifunc-backed @user / #issue completion inside comment composers.
+Trigger with <C-x><C-o> in insert mode after typing @ or #.
+>
+    completion = {
+      enabled = true,
+    }
+<
+Collaborators / issues are only fetched on github; empty elsewhere.
+
+colors                                                       *pr-setup-colors*
+Palette overrides, re-applied on every ColorScheme. Defaults:
+>
+    colors = {
+      diff_add_bg = "#40531b",
+      diff_change_bg = "#2a3a57",
+      diff_delete_bg = "#893f45",
+      sign_fg = "LightBlue",
+      hl_comment_bg = "LightBlue",
+      unresolved_bg = "#997570",
+      resolved_bg = "#82A67D",
+      emoji_bg = "#4493f8",
+      emoji_fg = "white",
+      popup_fg = "Yellow",
+      separator_fg = "Grey",
+      edit_dim_fg = "#5c6370",
+      outdated_fg = "#5c6370",
+      sign_comment_fg = "Grey",
+    }
+<
+Highlight-group definitions use `default = true`, so a colorscheme that
+defines the group names wins over these defaults.
+
+highlights                                               *pr-setup-highlights*
+Internal. Maps semantic roles to highlight-group and namespace names
+(sign_hl, hl_comment, unresolved_text, comments_ns_id, ...). Overriding
+these is unsupported unless you know the internals; prefer `colors` or
+defining the highlight groups in your colorscheme.
+==============================================================================
+3. Commands                                                      *pr-commands*
+
+All commands are registered by setup(); a bare :PR* also auto-runs
+setup({}) once via the plugin bootstrap.
+
+:PRRefresh                                                        *:PRRefresh*
+    Refresh comments, hunks, PR number/metadata, checks, pending review,
+    and drift caches, then redraw. Shows a change summary.
+
+:PRComment                                                        *:PRComment*
+    Open the review-thread popup for the comment under the cursor
+    (alias for require("pr").popup()). No-op if the cursor line isn't
+    inside a thread's anchored range.
+
+:PRList [filter]                                                     *:PRList*
+    List PRs and switch into one via `checkout_pr`. Completion:
+    mine | assigned | review-requested | all. Bare :PRList uses the
+    picker's current filter. (github/bitbucket; gitlab notifies
+    "not implemented".)
+
+:PRInfo [edit]                                                       *:PRInfo*
+    Show the PR info popup; :PRInfo edit opens it in edit mode.
+    (github only; gitlab/bitbucket notify "not implemented".)
+
+:PRReview                                                          *:PRReview*
+    Open the pending review for submission (Approve / Request changes /
+    Comment). github submits end-to-end; gitlab/bitbucket keep a local
+    queue but warn on submit.
+
+:PRReviewDiscard                                            *:PRReviewDiscard*
+    Discard the pending review without opening the layout.
+
+:PRSuggest                                                        *:PRSuggest*
+    (Range command.) Open a new-comment popup wrapping the visual
+    selection as a ```suggestion block.
+
+:PRQuickfix [kind]                                               *:PRQuickfix*
+    Dump PR threads to the quickfix list. Completion:
+    unresolved (default) | outdated | all | file.
+
+:PRRefreshUsers                                              *:PRRefreshUsers*
+    Clear the cached collaborators (forces re-fetch on next completion).
+
+:PRRefreshIssues                                            *:PRRefreshIssues*
+    Clear the cached issues + PRs (forces re-fetch on next completion).
+==============================================================================
+4. Keymaps                                                        *pr-keymaps*
+
+These keys are local to pr.nvim's floating popups; they are not global
+mappings. Global mappings (toggles, cycling) are yours to define against
+the |pr-api|.
+
+Comments popup                                           *pr-keymaps-comments*
+Opened by :PRComment / require("pr").popup(). A scrollable conversation
+with a reply composer below it.
+
+Navigation ~
+    j k <Down> <Up>   Move by line, snapping onto comment bodies
+    gj gk             Move by display line
+    <C-d> <C-u>       Half-page down / up
+    <C-f> <C-b>       Page down / up
+    gg G              First / last comment body
+    J K               Next / previous comment (J past last -> composer)
+    <Tab> <S-Tab>     Toggle focus between conversation and composer
+
+Actions (dispatch to the comment under the cursor) ~
+    e                 Emoji reactions menu (github/gitlab; hidden on
+                      bitbucket which has no reactions)
+    r                 Resolve or Unresolve the thread (whichever applies)
+    c                 Reply: jump to the composer. In visual mode, quote
+                      the selection into the composer
+    s                 Save a pending edit draft for this comment
+    a                 Apply the comment's ```suggestion; with no
+                      suggestion, falls through to editing your comment
+    ya                Yank the suggestion content to + and "
+    yl                Yank the thread permalink to + and "
+    gx                Open the thread permalink in the browser
+    <M-d>             Delete the comment (confirms first)
+    i I a A o O       Start editing your own comment in place
+    ?                 Help menu (lists every action, incl. keyless Edit)
+    q                 Close the popup
+
+Edit has no default key: reach it via ? or by pressing i/a/o on a
+comment you authored. In-place edits commit on leaving insert mode;
+<C-c> cancels.
+
+Reply composer                                              *pr-keymaps-reply*
+    <CR>              Submit the reply
+    <C-r>             Queue the reply as a review comment (n and i)
+    <Tab> <S-Tab>     Focus back to the conversation
+    q                 Close
+    <C-x><C-o>        @user / #issue completion (insert mode)
+
+New-comment popup                                     *pr-keymaps-new-comment*
+Opened by :PRSuggest or the visual-selection new-comment flow.
+    <CR>              Submit the comment
+    <C-r>             Queue as a review comment (n and i)
+    <M-s>             Toggle ```suggestion wrapping (n and i)
+    j k <Up> <Down>   Move between the code-reference and composer panes
+    <C-n> <C-p>       Same as j / k
+    q                 Close
+
+Review layout                                              *pr-keymaps-review*
+Opened by :PRReview.
+    a                 Submit APPROVE (a bare approve is allowed)
+    r                 Submit REQUEST_CHANGES
+    c                 Submit COMMENT
+    d                 Discard the pending review (confirms first)
+    q  <Esc><Esc>     Close without submitting
+
+COMMENT and REQUEST_CHANGES require a body or at least one pending
+comment; APPROVE does not.
+
+PR info / edit                                            *pr-keymaps-pr-info*
+Opened by :PRInfo.
+    e                 Enter edit mode
+    c                 Open the CI-check log menu
+    u                 Refresh
+    q                 Close
+In edit mode (:PRInfo edit):
+    <C-s>             Submit title + body (n and i)
+    q  <Esc><Esc>     Cancel
+
+Checks menu (from `c`): <CR> opens the selected check URL; q or <Esc>
+closes. Emoji menu: <CR>/<Space> toggles a reaction; j/k navigate;
+q/<Esc>/e/<C-c> close.
+==============================================================================
+5. Providers                                                    *pr-providers*
+
+All three providers implement the core comment / hunk / thread surface.
+Newer features vary. yes = real; no = silent/absent; local = queued
+locally but submit only warns.
+>
+    Feature                        github   gitlab   bitbucket
+    Inline comments + hunks        yes      yes      yes
+    Resolve / unresolve threads    yes      yes      yes
+    Reply / edit / delete          yes      yes      yes
+    Thread permalink (yl / gx)     yes      yes      yes
+    Reactions / emoji              yes      yes      no
+    PR list + checkout (:PRList)   yes      no       yes
+    PR info + edit (:PRInfo)       yes      no       no
+    CI checks (:PRInfo -> c)       yes      no       no
+    Submit review (:PRReview)      yes      local    local
+    Conflict-aware edit refetch    yes      no       no
+    @user / #issue completion      yes      no       no
+<
+Notes:
+  - Bitbucket Cloud PR comments have no reactions, so the emoji action
+    is hidden there. GitLab reactions are real.
+  - gitlab/bitbucket keep a local pending-review queue (review_local);
+    :PRReview submit emits a WARN rather than posting end-to-end.
+  - Consumers should guard optional methods with
+    type(git.foo) == "function".
+==============================================================================
+6. Events                                                          *pr-events*
+
+pr.nvim fires User autocmd events after a refresh so statusline / winbar
+plugins can subscribe instead of polling.
+
+    PRCommentsRefreshed   after comments are re-fetched and redrawn
+    PRHunksRefreshed      after hunks are re-fetched and redrawn
+
+Example: >
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "PRCommentsRefreshed",
+      callback = function()
+        -- e.g. redraw a custom statusline from require("pr").status()
+      end,
+    })
+<
+==============================================================================
+7. Lua API                                                            *pr-api*
+
+require("pr") ~
+
+status()                  Return a PRStatus table (see below).
+winbar(bufnr?)            Formatted winbar token, or "" when disabled
+                         or no PR is associated.
+refresh(opts?)           Refresh everything. opts.show_diff (default
+                         true) toggles the change-summary notification.
+popup(relative_path?, line?)
+                         Open the thread popup for a path/line (defaults
+                         to the cursor). Backs :PRComment.
+toggle_comments()        Toggle inline comment decorations.
+toggle_hunks()           Toggle hunk background highlights.
+cycle_comments_in_buffer()
+                         Jump to the next comment thread in the buffer.
+cycle_hunks_in_buffer()  Jump to the next hunk in the buffer.
+comment()                File a new comment from the visual selection.
+comment_with_suggestion()
+                         As :PRSuggest.
+attach_comment(win)      Attach comment decorations to a window.
+attach_hunk(win)         Attach hunk decorations to a window.
+set_refresh_interval(seconds)
+                         Restart the periodic-refresh timer (0 stops it).
+
+require("pr.picker") ~
+
+pick_comments(picker?, ...)   Pick a comment thread.
+pick_hunks(picker?, ...)      Pick a diff hunk.
+pick_prs(picker?, ...)        Pick a PR (backs :PRList).
+A nil `picker` uses config.opts.picker.
+
+PRStatus (returned by status()) ~
+
+    pr_number        integer? active PR number, or nil
+    total            integer  total cached threads
+    unresolved       integer  unresolved threads
+    resolved         integer  resolved threads
+    outdated         integer  outdated threads
+    pending_review   integer  queued review comments
+    on_buffer        integer  reserved, always 0
+
+`on_buffer` is reserved: status() aggregates across the whole PR and
+carries no buffer context. For a live per-buffer unresolved count use
+require("pr.status").compute_for_buffer(bufnr).
+==============================================================================
+8. Health                                                          *pr-health*
+
+Run :checkhealth pr. It verifies:
+
+  - Neovim >= 0.10 (error, and everything below assumes 0.10 APIs).
+  - The configured provider name.
+  - The provider CLI is on PATH (gh / glab / curl).
+  - git is on PATH.
+  - nui.nvim is available.
+  - plenary.nvim is available.
+  - The configured picker module is loadable (warn if not).
+  - The provider implements the full method surface (counts N/N).
+  - A virtual-lines / virtual-text renderer is active, otherwise inline
+    comment text won't show below commented lines (warn only; signs in
+    the gutter still work). Enable
+    vim.diagnostic.config({ virtual_lines = true }) or install
+    lsp_lines.nvim.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
