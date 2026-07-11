@@ -2,6 +2,29 @@ local M = {}
 
 local git = require("pr.provider").get_provider()
 
+--- Pure conflict-resolution decision for the PR-info edit path. Mirrors
+--- `ui._conflict_decision`'s contract exactly so both edit flows agree on how a
+--- remote change interacts with the user's confirm choice.
+---@param fresh { updated_at: string }?
+---@param snapshot_updated_at string?
+---@param confirm_choice integer  -- as returned by vim.fn.confirm
+---@return "proceed"|"overwrite"|"refresh"|"abort"
+function M._conflict_decision(fresh, snapshot_updated_at, confirm_choice)
+	if not fresh then
+		return "proceed"
+	end
+	if fresh.updated_at == snapshot_updated_at then
+		return "proceed"
+	end
+	if confirm_choice == 1 then
+		return "overwrite"
+	end
+	if confirm_choice == 2 then
+		return "refresh"
+	end
+	return "abort"
+end
+
 local function open_edit(metadata)
 	local ui = require("pr.ui")
 	local snapshot = metadata.updated_at
@@ -19,15 +42,19 @@ local function open_edit(metadata)
 				git.clear_pr_metadata()
 			end
 			git.get_pr_metadata(vim.schedule_wrap(function(fresh)
-				if fresh and fresh.updated_at and fresh.updated_at ~= snapshot then
-					local choice = vim.fn.confirm("PR title/body changed remotely since edit started.", "&Overwrite\n&Refresh\n&Abort", 3)
-					if choice == 2 then
-						-- Refresh: re-open the read popup so the user sees the current state.
-						M.show()
-						return
-					elseif choice ~= 1 then
-						return
-					end
+				-- Prompt only on an actual mismatch; `_conflict_decision` is the
+				-- single source of truth for what that choice (or its absence) means.
+				local choice = 0
+				if fresh and fresh.updated_at ~= snapshot then
+					choice = vim.fn.confirm("PR title/body changed remotely since edit started.", "&Overwrite\n&Refresh\n&Abort", 3)
+				end
+				local decision = M._conflict_decision(fresh, snapshot, choice)
+				if decision == "refresh" then
+					-- Refresh: re-open the read popup so the user sees the current state.
+					M.show()
+					return
+				elseif decision == "abort" then
+					return
 				end
 				if type(git.update_pr_metadata) ~= "function" then
 					vim.notify("update_pr_metadata not available for this provider")
