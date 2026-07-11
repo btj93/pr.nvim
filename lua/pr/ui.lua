@@ -2077,7 +2077,15 @@ M.actions = {
 		show_hint = false,
 		can_perform = function(_, comment)
 			local draft = require("pr.drafts").get_edit(comment.database_id) or {}
-			return draft.body and draft.updated_at
+			-- Only offer the draft for submission when it still matches the live
+			-- comment. A draft whose updated_at has drifted (the comment was edited
+			-- remotely since the draft was written) would silently clobber that
+			-- remote edit if submitted via edit_comment — the same staleness the
+			-- inline-edit entry guard (_start_inline_edit) drops. This mirrors that
+			-- drop condition. can_perform runs on every render, so it MUST stay
+			-- side-effect-free: we do NOT delete the stale draft here; it is cleaned
+			-- up the next time the inline-edit entry guard runs.
+			return draft.body ~= nil and draft.updated_at ~= nil and draft.updated_at == comment.updated_at
 		end,
 		perform = function(_, comment, _, _)
 			local drafts = require("pr.drafts")

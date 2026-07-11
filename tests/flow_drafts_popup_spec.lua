@@ -150,6 +150,42 @@ describe("flow: drafts popup lifecycle", function()
 		layout:unmount()
 	end)
 
+	it("the save action (`s`) is withheld when the edit draft's updated_at no longer matches the live comment", function()
+		local ui = require("pr.ui")
+		local drafts = require("pr.drafts")
+		local thread = fake.scenario.comments["lua/a.lua"][1]
+
+		-- Seed a STALE pending edit draft: its updated_at differs from the live
+		-- comment's ("2026-01-01T00:00:00Z"), i.e. the comment was edited remotely
+		-- since the draft was written. Submitting it via `s` would silently clobber
+		-- that remote edit, so `s` must be withheld (can_perform false, no
+		-- fall-through) and no edit_comment call may be made.
+		drafts.save_edit(1001, { body = { "stale edit body" }, updated_at = "2020-01-01T00:00:00Z" })
+
+		local layout, comments_popup = ui.make_comments_layout(thread, "lua/a.lua")
+		layout:mount()
+
+		local body_line
+		env.wait_for(function()
+			body_line = line_with(comments_popup.bufnr, "please fix this")
+			return body_line ~= nil
+		end, 2000, "thread body rendered")
+
+		vim.api.nvim_set_current_win(comments_popup.winid)
+		vim.api.nvim_win_set_cursor(comments_popup.winid, { body_line, 0 })
+		env.feed("s")
+
+		-- Drain any scheduled work; a correct guard makes no edit_comment call at all.
+		env.drain()
+		assert.is_nil(fake_provider.called(fake, "edit_comment"))
+
+		-- can_perform is side-effect-free, so the stale draft is NOT deleted here
+		-- (it is cleaned up on the next inline-edit entry). It simply isn't offered.
+		assert.is_not_nil(drafts.get_edit(1001))
+
+		layout:unmount()
+	end)
+
 	it("new-comment draft keyed by path:start:end survives popup close and pre-fills", function()
 		local ui = require("pr.ui")
 		local drafts = require("pr.drafts")
