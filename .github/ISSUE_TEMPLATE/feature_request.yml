@@ -1,0 +1,71 @@
+name: Feature request
+description: Suggest a new capability or improvement for pr.nvim
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. pr.nvim supports three git providers and three
+        pickers behind pluggable backends, so the "parity" questions below help
+        us understand how broadly a feature applies.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what makes it hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >
+        What should pr.nvim do? Describe the command, keymap, option, or UI
+        behavior you have in mind.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Provider parity
+      description: >
+        Which of the three git providers does this apply to? Backend-specific
+        features are fine, but call it out — new provider methods must land on
+        GitHub with at least stubs on GitLab and Bitbucket.
+      multiple: true
+      options:
+        - github
+        - gitlab
+        - bitbucket
+        - all three
+        - not provider-specific
+    validations:
+      required: true
+
+  - type: dropdown
+    id: pickers
+    attributes:
+      label: Picker parity
+      description: >
+        Does this touch the picker UI? Picker-facing features must work across
+        all three backends (snacks, telescope, fzf).
+      multiple: true
+      options:
+        - snacks
+        - telescope
+        - fzf
+        - all three
+        - not picker-related
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / prior art
+      description: Other approaches you considered, or how other tools solve this.
+    validations:
+      required: false

@@ -511,7 +511,7 @@ Full reference documentation ships as vimdoc — run `:help pr` (or the topic ta
 
 ## Development & testing
 
-Contributions are welcome. The test, lint, and format tooling is driven by the `Makefile`:
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev loop, the three test layers, and the provider/picker parity rules. The test, lint, and format tooling is driven by the `Makefile`:
 
 - `make test` — runs the [`plenary.busted`](https://github.com/nvim-lua/plenary.nvim) suite over `tests/` (the first run shallow-clones `plenary.nvim` to `/tmp/plenary.nvim`). The suite spans three layers: **pure-helper unit specs** (diff parsing, provider normalization, drift, suggestions, render helpers), **end-to-end `flow_*` specs** that drive the popups and pickers against a fake provider, and **contract specs** (`provider_contract_spec`, `picker_contract_spec`, `vimdoc_spec`) that assert every provider and picker implements the full method surface and that the bundled vimdoc stays in sync with the real commands.
 - `make lint` — `luacheck lua/ tests/`.
