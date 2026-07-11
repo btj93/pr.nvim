@@ -373,12 +373,6 @@ function M.make_comment_popup(thread, comment, new_reply_popup, enter)
 				return
 			end
 
-			local draft = drafts.get_edit(comment.database_id) or {}
-			if draft.updated_at and draft.updated_at ~= comment.updated_at then
-				vim.notify("TODO: implement")
-				return
-			end
-
 			drafts.save_edit(comment.database_id, {
 				body = new_body,
 				updated_at = comment.updated_at,
