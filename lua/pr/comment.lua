@@ -190,7 +190,10 @@ function M.comment(relative_path, start_line, end_line)
 		start_line = vim.fn.line("'<")
 		end_line = vim.fn.line("'>")
 
-		local lines = vim.api.nvim_buf_get_text(buf, start_line - 1, 0, end_line + 1, -1, {})
+		-- end_line - 1 is the 0-indexed last row of the selection (end-inclusive);
+		-- `end_line + 1` over-read two lines and threw "Index out of bounds" when
+		-- the selection was within two lines of EOF (cf. suggestion._capture_visual_lines).
+		local lines = vim.api.nvim_buf_get_text(buf, start_line - 1, 0, end_line - 1, -1, {})
 		local ui = require("pr.ui")
 		local layout = ui.make_new_comment_layout(lines, ft, relative_path, start_line, end_line)
 		layout:mount()

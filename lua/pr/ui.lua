@@ -1059,7 +1059,11 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 		end,
 	})
 
-	new_comment_popup:map({ "n", "i" }, "<M-s>", function()
+	-- nui's Popup:map forwards `mode` straight to nvim_buf_set_keymap, which
+	-- requires a string; a table like { "n", "i" } raises "Invalid 'mode'" and
+	-- crashes the whole layout on mount. Bind each mode separately (mirrors the
+	-- <C-r> queue map below).
+	local function toggle_suggestion()
 		local current_lines = vim.api.nvim_buf_get_lines(new_comment_popup.bufnr, 0, -1, false)
 		local current_text = table.concat(current_lines, "\n")
 		local unwrapped = require("pr.suggestion").unwrap_suggestion(current_text)
@@ -1071,7 +1075,10 @@ function M.make_new_comment_layout(lines, ft, relative_path, start_line, end_lin
 			local wrapped = require("pr.suggestion").wrap_as_suggestion(current_lines)
 			vim.api.nvim_buf_set_lines(new_comment_popup.bufnr, 0, -1, false, vim.split(wrapped, "\n", { plain = true }))
 		end
-	end, { noremap = true })
+	end
+	for _, mode in ipairs({ "n", "i" }) do
+		new_comment_popup:map(mode, "<M-s>", toggle_suggestion, { noremap = true })
+	end
 
 	local new_comment_box = Layout.Box(new_comment_popup, { size = "40%" })
 
