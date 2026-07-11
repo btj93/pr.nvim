@@ -120,6 +120,21 @@ describe("flow: popup + navigation", function()
 			repo.cleanup()
 			repo = nil
 		end
+		-- Drop any user commands the :PRComment case registered.
+		for _, name in ipairs({
+			"PRRefresh",
+			"PRComment",
+			"PRList",
+			"PRInfo",
+			"PRReview",
+			"PRReviewDiscard",
+			"PRSuggest",
+			"PRQuickfix",
+			"PRRefreshUsers",
+			"PRRefreshIssues",
+		}) do
+			pcall(vim.api.nvim_del_user_command, name)
+		end
 	end)
 
 	--- Focus the file window and place the cursor on `row`.
@@ -142,6 +157,26 @@ describe("flow: popup + navigation", function()
 
 		local text = buf_text(body_buf)
 		-- Picked the thread whose range covers line 5, not its neighbours.
+		assert.truthy(text:find("thread beta at line five", 1, true))
+		assert.is_nil(text:find("thread alpha at line two", 1, true))
+		assert.is_nil(text:find("thread gamma at line nine", 1, true))
+	end)
+
+	it(":PRComment opens the thread under the cursor", function()
+		-- Register the user commands (single source of truth in init.lua) and drive
+		-- the popup through :PRComment rather than the M.popup() call above.
+		require("pr")._register_commands()
+		focus_file(5)
+		vim.cmd.PRComment()
+
+		local body_buf
+		env.wait_for(function()
+			local _, b = find_float_with(env, "thread beta at line five")
+			body_buf = b
+			return b ~= nil
+		end, 2000, ":PRComment popup for the line-5 thread")
+
+		local text = buf_text(body_buf)
 		assert.truthy(text:find("thread beta at line five", 1, true))
 		assert.is_nil(text:find("thread alpha at line two", 1, true))
 		assert.is_nil(text:find("thread gamma at line nine", 1, true))

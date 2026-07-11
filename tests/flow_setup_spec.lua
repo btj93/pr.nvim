@@ -70,12 +70,13 @@ describe("flow: pr.setup()", function()
 		vim.cmd("silent! %bwipeout!")
 	end)
 
-	it("setup registers all 9 user commands", function()
+	it("setup registers all 10 user commands", function()
 		pr.setup({ run_on_start = { comments = false, hunks = false }, auto_refresh = SAFE_AUTO })
 
 		local cmds = vim.api.nvim_get_commands({})
 		local expected = {
 			"PRRefresh",
+			"PRComment",
 			"PRList",
 			"PRInfo",
 			"PRReview",
@@ -85,7 +86,7 @@ describe("flow: pr.setup()", function()
 			"PRRefreshUsers",
 			"PRRefreshIssues",
 		}
-		assert.equals(9, #expected)
+		assert.equals(10, #expected)
 		for _, name in ipairs(expected) do
 			assert.is_not_nil(cmds[name], "missing user command " .. name)
 		end
@@ -196,5 +197,153 @@ describe("flow: pr.setup()", function()
 		pr.setup({ run_on_start = { comments = false, hunks = false }, auto_refresh = SAFE_AUTO })
 		assert.is_false(comment.enabled)
 		assert.is_false(hunk.enabled)
+	end)
+end)
+
+-- The classic plugin entry (plugin/pr.lua) registers every :PR* command as a
+-- lightweight BOOTSTRAP stub WITHOUT requiring "pr" at source time. The first
+-- time any command runs, the stub calls require("pr")._ensure_setup() (which
+-- runs setup({}) once) and then dispatches the invocation.
+--
+-- DANGER (same as the setup() describe above): the auto-setup uses DEFAULTS —
+-- run_on_start.comments = true (shells out; the fake provider absorbs it) and
+-- auto_refresh.interval = 300 (a live timer) — so every case installs the fake
+-- provider BEFORE invoking a command and after_each stops the timer, deletes
+-- the augroups, and drops the 10 commands so nothing leaks into the next spec.
+describe("flow: plugin/pr.lua entry (auto-setup)", function()
+	local ALL_COMMANDS = {
+		"PRRefresh",
+		"PRComment",
+		"PRList",
+		"PRInfo",
+		"PRReview",
+		"PRReviewDiscard",
+		"PRSuggest",
+		"PRQuickfix",
+		"PRRefreshUsers",
+		"PRRefreshIssues",
+	}
+
+	local comment, hunk, uninstall
+
+	local function del_all_commands()
+		for _, name in ipairs(ALL_COMMANDS) do
+			pcall(vim.api.nvim_del_user_command, name)
+		end
+	end
+
+	before_each(function()
+		vim.cmd.cd(PLUGIN_ROOT)
+		comment = require("pr.comment")
+		hunk = require("pr.hunk")
+		-- Clean slate: no leftover commands, no cached pr module, and the load
+		-- guard reset so dofile actually re-runs the plugin body.
+		del_all_commands()
+		package.loaded["pr"] = nil
+		vim.g.loaded_pr = nil
+		-- The returned fake is unused here (installed only so auto-setup's default
+		-- run_on_start/refresh shell-outs resolve through it, not real gh).
+		uninstall = select(2, fake_provider.install("flow_plugin_fake", {}))
+		pcall(function()
+			require("pr.review_local")._set_path(vim.fn.tempname())
+		end)
+		pcall(function()
+			require("pr.drafts")._set_path(vim.fn.tempname())
+		end)
+		-- Source the classic entry point WITHOUT calling setup().
+		dofile(PLUGIN_ROOT .. "/plugin/pr.lua")
+	end)
+
+	after_each(function()
+		local pr = package.loaded["pr"]
+		if pr then
+			pcall(function()
+				pr.set_refresh_interval(0)
+			end)
+		end
+		pcall(comment.stop)
+		pcall(hunk.stop)
+		comment.enabled = false
+		hunk.enabled = false
+		for _, g in ipairs({
+			"PRColorScheme",
+			"PRAutoRefresh",
+			"PRHeadChange",
+			"PRWinbar",
+			"PRDraftsFlush",
+			"PRComment",
+			"PRHunk",
+			"PRCommentBufWrite",
+			"PRHunkBufWrite",
+		}) do
+			pcall(vim.api.nvim_del_augroup_by_name, g)
+		end
+		del_all_commands()
+		vim.g.loaded_pr = nil
+		if uninstall then
+			uninstall()
+		end
+		vim.cmd("silent! %bwipeout!")
+	end)
+
+	it("sourcing plugin/pr.lua registers all 10 commands without loading the pr module", function()
+		-- Laziness: sourcing the plugin must NOT require("pr").
+		assert.is_nil(package.loaded["pr"], "plugin/pr.lua must not require('pr') at source time")
+
+		local cmds = vim.api.nvim_get_commands({})
+		assert.equals(10, #ALL_COMMANDS)
+		for _, name in ipairs(ALL_COMMANDS) do
+			assert.is_not_nil(cmds[name], "missing user command " .. name)
+		end
+	end)
+
+	it("first command invocation auto-runs setup() exactly once (defines signs)", function()
+		local pr = require("pr")
+		local setup_calls = 0
+		local orig_setup = pr.setup
+		pr.setup = function(o)
+			setup_calls = setup_calls + 1
+			return orig_setup(o)
+		end
+
+		local sign = require("pr.config").opts.highlights.sign_comment
+		vim.fn.sign_undefine(sign)
+		assert.equals(0, #vim.fn.sign_getdefined(sign), "sign should be undefined before any command runs")
+
+		-- Invoke through the bootstrap stub: ensures setup, then dispatches.
+		vim.cmd("PRRefresh")
+		assert.equals(1, setup_calls, "setup should run exactly once")
+		assert.is_true(#vim.fn.sign_getdefined(sign) > 0, "setup should have defined the comment sign")
+
+		-- A second invocation hits the real command (which overwrote the stub) and
+		-- must NOT re-run setup.
+		vim.cmd("PRRefresh")
+		assert.equals(1, setup_calls, "setup should not run again on subsequent invocations")
+
+		pr.setup = orig_setup
+	end)
+
+	it("explicit setup() after auto-setup re-merges config without erroring or double-registering", function()
+		-- Trigger auto-setup via a command (defaults; fake provider absorbs it).
+		vim.cmd("PRRefresh")
+
+		local pr = require("pr")
+		assert.has_no.errors(function()
+			pr.setup({
+				winbar = { enabled = true, format = "[PR #%d · %d unresolved]" },
+				run_on_start = { comments = false, hunks = false },
+				auto_refresh = SAFE_AUTO,
+			})
+		end)
+
+		-- The later explicit setup re-ran the config merge: winbar (off by default,
+		-- so absent after auto-setup) is now enabled.
+		assert.is_true(augroup_exists("PRWinbar"), "explicit setup should re-apply config (winbar)")
+
+		-- Still exactly the 10 commands, none dropped or duplicated.
+		local cmds = vim.api.nvim_get_commands({})
+		for _, name in ipairs(ALL_COMMANDS) do
+			assert.is_not_nil(cmds[name], "command missing after explicit setup: " .. name)
+		end
 	end)
 end)
