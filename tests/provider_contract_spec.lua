@@ -90,4 +90,14 @@ describe("provider contract", function()
 			end)
 		end)
 	end
+
+	it("fake provider (tests/helpers) implements the full contract", function()
+		local fake = require("helpers.fake_provider").new({})
+		for _, method in ipairs(REQUIRED_METHODS) do
+			assert.equals("function", type(fake[method]), "fake provider missing method: " .. method)
+		end
+		for _, field in ipairs(REQUIRED_FIELDS) do
+			assert.is_not_nil(fake[field], "fake provider missing field: " .. field)
+		end
+	end)
 end)
