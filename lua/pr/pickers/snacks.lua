@@ -8,6 +8,137 @@ local function safe_require(mod)
 end
 local Snacks = safe_require("snacks")
 
+-- ---------------------------------------------------------------------------
+-- Pure item builders + confirm dispatchers.
+--
+-- These are UI-independent: they build the finder rows and dispatch the
+-- file-open / checkout that pick_comments / pick_hunks / pick_prs feed to
+-- Snacks.picker(). They never touch the (optional) `Snacks` upvalue, so they
+-- are safe to require and exercise without snacks.nvim installed.
+--
+-- Filtering boundary: `_build_comment_items` does NOT apply filter.apply --
+-- pick_comments applies the user-toggle filter on every finder run and hands
+-- the already-filtered Comments map here. Keep that split; do not fold
+-- filtering into the builder.
+--
+-- git_root is accepted for signature uniformity across the three backends.
+-- The snacks rows carry the *relative* `file` (that's what format_* renders in
+-- the picker); the absolute path is resolved from the provider at confirm time
+-- (`_confirm_comment` / `_confirm_hunk`), so the snacks builders don't embed
+-- git_root into their rows.
+-- ---------------------------------------------------------------------------
+
+--- Build the comment picker rows from an already-filtered Comments map.
+---@param comments Comments already-filtered (filter.apply applied by caller)
+---@param git_root string absolute git root (unused here; see note above)
+---@return snacks.picker.finder.Item[]
+function M._build_comment_items(comments, git_root)
+	local items = {}
+	for file, threads in pairs(comments) do
+		for _, thread in ipairs(threads) do
+			local _, first = next(thread.comments)
+			if first then
+				table.insert(items, {
+					file = file,
+					["data"] = {
+						["author"] = first.author,
+						["body"] = first.body,
+						["is_resolved"] = thread.is_resolved,
+						["is_outdated"] = thread.is_outdated,
+					},
+					text = first.author .. first.body .. file,
+					pos = { first.start_line, 0 },
+					end_pos = { first.end_line, 0 },
+				})
+			end
+		end
+	end
+	return items
+end
+
+--- Build the hunk picker rows.
+---@param hunks Hunks
+---@param git_root string absolute git root (unused here; see note above)
+---@return snacks.picker.finder.Item[]
+function M._build_hunk_items(hunks, git_root)
+	local items = {}
+	for file, hs in pairs(hunks) do
+		for _, h in ipairs(hs) do
+			table.insert(items, {
+				file = file,
+				["data"] = {
+					["hunk_start"] = h.hunk_start,
+					["hunk_end"] = h.hunk_end,
+					["type"] = h.type,
+				},
+				text = file .. " " .. h.hunk_start .. ":" .. h.hunk_end,
+				pos = { h.hunk_start, 0 },
+				end_pos = { h.hunk_end, 0 },
+			})
+		end
+	end
+	return items
+end
+
+--- Build the PR picker rows.
+---@param prs PRSummary[]
+---@return snacks.picker.finder.Item[]
+function M._build_pr_items(prs)
+	local items = {}
+	for _, pr in ipairs(prs) do
+		table.insert(items, {
+			text = string.format("#%d %s %s", pr.number, pr.title or "", pr.author or ""),
+			data = {
+				number = pr.number,
+				title = pr.title or "",
+				author = pr.author or "",
+				state = pr.state or "",
+				branch = pr.branch or "",
+				url = pr.url or "",
+			},
+		})
+	end
+	return items
+end
+
+--- Open the file targeted by a comment picker row. UI-independent: the caller
+--- closes the picker; this only resolves the absolute path and dispatches.
+---@param item snacks.picker.finder.Item?
+function M._confirm_comment(item)
+	if not item then
+		return
+	end
+	local abs = require("pr.provider").get_provider().git_root .. "/" .. item.file
+	local line = item.pos and item.pos[1] or nil
+	require("pr.util").open_pr_file(abs, item.file, { line = line })
+end
+
+--- Open the file targeted by a hunk picker row. UI-independent (see above).
+---@param item snacks.picker.finder.Item?
+function M._confirm_hunk(item)
+	if not item then
+		return
+	end
+	local abs = require("pr.provider").get_provider().git_root .. "/" .. item.file
+	local line = item.pos and item.pos[1] or nil
+	require("pr.util").open_pr_file(abs, item.file, { line = line })
+end
+
+--- Checkout the PR referenced by a PR picker row. UI-independent: the caller
+--- closes the picker first.
+---@param item snacks.picker.finder.Item?
+function M._confirm_pr(item)
+	if not item then
+		return
+	end
+	local ok, pr_list = pcall(require, "pr.pr_list")
+	if not ok or type(pr_list.checkout) ~= "function" then
+		vim.notify("pr_list.checkout not available yet")
+		return
+	end
+	pr_list.checkout(item.data.number)
+end
+
 --- @class pr.pickers.PickCommentsConfig
 --- @field filters function[] (comments: Comments): Comments
 --- @field format function (item: snacks.picker.Item, _: snacks.Picker): table
@@ -40,30 +171,11 @@ function M.pick_comments(opts)
 		end
 
 		--- Build the picker items from `pre` with the latest filter state.
+		--- filter.apply stays here (per finder run); the pure row-building is in
+		--- M._build_comment_items.
 		---@return snacks.picker.finder.Item[]
 		local function build_items()
-			local comments = filter.apply(pre)
-			local items = {}
-			for file, threads in pairs(comments) do
-				for _, thread in ipairs(threads) do
-					local _, first = next(thread.comments)
-					if first then
-						table.insert(items, {
-							file = file,
-							["data"] = {
-								["author"] = first.author,
-								["body"] = first.body,
-								["is_resolved"] = thread.is_resolved,
-								["is_outdated"] = thread.is_outdated,
-							},
-							text = first.author .. first.body .. file,
-							pos = { first.start_line, 0 },
-							end_pos = { first.end_line, 0 },
-						})
-					end
-				end
-			end
-			return items
+			return M._build_comment_items(filter.apply(pre), require("pr.provider").get_provider().git_root)
 		end
 
 		return Snacks.picker({
@@ -120,12 +232,7 @@ function M.pick_comments(opts)
 			format = format,
 			confirm = function(picker, item)
 				picker:close()
-				if not item then
-					return
-				end
-				local abs = require("pr.provider").get_provider().git_root .. "/" .. item.file
-				local line = item.pos and item.pos[1] or nil
-				require("pr.util").open_pr_file(abs, item.file, { line = line })
+				M._confirm_comment(item)
 			end,
 		})
 	end))
@@ -250,24 +357,7 @@ function M.pick_hunks(format)
 		return Snacks.picker({
 			---@return snacks.picker.finder.Item[]
 			finder = function()
-				local items = {}
-				for file, hs in pairs(hunks) do
-					for _, h in ipairs(hs) do
-						table.insert(items, {
-							file = file,
-							["data"] = {
-								["hunk_start"] = h.hunk_start,
-								["hunk_end"] = h.hunk_end,
-								["type"] = h.type,
-							},
-							text = file .. " " .. h.hunk_start .. ":" .. h.hunk_end,
-							pos = { h.hunk_start, 0 },
-							end_pos = { h.hunk_end, 0 },
-						})
-					end
-				end
-
-				return items
+				return M._build_hunk_items(hunks, require("pr.provider").get_provider().git_root)
 			end,
 			-- layout = {
 			-- 	layout = {
@@ -286,12 +376,7 @@ function M.pick_hunks(format)
 			format = format,
 			confirm = function(picker, item)
 				picker:close()
-				if not item then
-					return
-				end
-				local abs = require("pr.provider").get_provider().git_root .. "/" .. item.file
-				local line = item.pos and item.pos[1] or nil
-				require("pr.util").open_pr_file(abs, item.file, { line = line })
+				M._confirm_hunk(item)
 			end,
 		})
 	end))
@@ -328,21 +413,7 @@ function M.pick_prs(opts)
 
 	---@return snacks.picker.finder.Item[]
 	local function build_items()
-		local items = {}
-		for _, pr in ipairs(state.prs) do
-			table.insert(items, {
-				text = string.format("#%d %s %s", pr.number, pr.title or "", pr.author or ""),
-				data = {
-					number = pr.number,
-					title = pr.title or "",
-					author = pr.author or "",
-					state = pr.state or "",
-					branch = pr.branch or "",
-					url = pr.url or "",
-				},
-			})
-		end
-		return items
+		return M._build_pr_items(state.prs)
 	end
 
 	git.list_prs(
@@ -388,15 +459,7 @@ function M.pick_prs(opts)
 				format = M.format_prs,
 				confirm = function(picker, item)
 					picker:close()
-					if not item then
-						return
-					end
-					local ok, pr_list = pcall(require, "pr.pr_list")
-					if not ok or type(pr_list.checkout) ~= "function" then
-						vim.notify("pr_list.checkout not available yet")
-						return
-					end
-					pr_list.checkout(item.data.number)
+					M._confirm_pr(item)
 				end,
 			})
 		end)
