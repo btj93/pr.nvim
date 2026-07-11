@@ -10,6 +10,8 @@
 -- match within a single argv token -- e.g. `{ "/user" }` matches the argv
 -- token `https://api/x/user`. This is required by the locked spec (curl's
 -- `/user` route against a URL); pure whole-token equality cannot express it.
+-- A route with an empty or absent `match` has no tokens to fail, so it matches
+-- every argv: use it as an always-matching catch-all (order it last).
 local M = {}
 
 -- \x1e (record) and \x1f (field) separators used in the argv log. Kept out of
@@ -97,6 +99,7 @@ function M.new()
 	end
 
 	function shim.install()
+		assert(not shim._saved_path, "cli_shim: already installed")
 		shim._saved_path = vim.env.PATH
 		vim.env.PATH = bindir .. ":" .. vim.env.PATH
 	end

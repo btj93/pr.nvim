@@ -30,7 +30,7 @@ describe("helpers.cli_shim", function()
 		assert.same({ "pr", "view", "--json", "number" }, calls[1])
 	end)
 
-	it("subsequence match is ordered token equality, not substring", function()
+	it("subsequence match is ordered (substring within tokens allowed)", function()
 		shim = cli_shim.new()
 		shim.stub("gh", { { match = { "api", "user" }, stdout = "ok\n" } })
 		shim.install()

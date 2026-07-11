@@ -278,4 +278,55 @@ describe("gitlab provider through real CLI plumbing", function()
 		end
 		assert.is_true(found, "expected the glab install hint in a notification")
 	end)
+
+	it("resolve_thread PUTs resolved=true to the discussion endpoint on success", function()
+		-- ensure_context resolves the project (real git) + iid (mr view), then the
+		-- PUT exits 0 so the callback receives success = true.
+		shim.stub("glab", {
+			MR_VIEW_IID,
+			{ match = { "api", "--method", "PUT" }, stdout = "{}" },
+		})
+
+		local ok
+		glab.resolve_thread("abc123", function(success)
+			ok = success
+		end)
+		wait_for(function()
+			return ok ~= nil
+		end, "resolve_thread cb")
+
+		assert.is_true(ok)
+		local puts = calls_with("glab", "PUT")
+		assert.equals(1, #puts)
+		local argv = puts[1]
+		local joined = join(argv)
+		-- The discussion id anchors the endpoint under the url-encoded project + MR.
+		assert.truthy(joined:find("/projects/group%2Fproj/merge_requests/7/discussions/abc123", 1, true))
+		assert_flag_pair(argv, "-F", "resolved=true")
+	end)
+
+	it("clear_comments forces the next get_comments to re-run the graphql query", function()
+		shim.stub("glab", { MR_VIEW_IID, API_USER, API_GRAPHQL })
+
+		local c1
+		glab.get_comments(function(c)
+			c1 = c
+		end)
+		wait_for(function()
+			return c1 ~= nil
+		end, "first get_comments")
+		assert.equals(1, #calls_with("glab", "graphql"))
+
+		glab.clear_comments()
+
+		local c2
+		glab.get_comments(function(c)
+			c2 = c
+		end)
+		wait_for(function()
+			return c2 ~= nil
+		end, "second get_comments after clear")
+		-- git_user + iid stay cached, so only the graphql query re-fires: 1 -> 2.
+		assert.equals(2, #calls_with("glab", "graphql"))
+	end)
 end)

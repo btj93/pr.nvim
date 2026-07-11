@@ -39,6 +39,26 @@ describe("bitbucket provider through real CLI plumbing", function()
 	local PR_NUMBER_QUERY = { match = { "pullrequests?state=OPEN&pagelen=5" }, stdout = '{"values":[{"id":5}]}' }
 	-- get_git_user resolves the authed nickname off GET /user.
 	local API_USER = { match = { "/user" }, stdout = '{"nickname":"tester"}' }
+	-- list_prs("mine") needs the uuid too (author.uuid DSL filter + is_mine).
+	local API_USER_UUID = { match = { "/user" }, stdout = '{"nickname":"tester","uuid":"abc-123"}' }
+	-- A 2-PR page for list_prs, both authored by `tester` (uuid abc-123). Kept on
+	-- a single line so run_curl's vim.json.decode consumes it as one body.
+	local LIST_BODY = table.concat({
+		'{"values":[',
+		'{"id":11,"title":"first pr","state":"OPEN",',
+		'"author":{"nickname":"tester","uuid":"abc-123"},',
+		'"source":{"branch":{"name":"feat/one"}},',
+		'"reviewers":[{"nickname":"bob","uuid":"bob-9"}],',
+		'"links":{"html":{"href":"https://bitbucket.org/acme/widget/pull-requests/11"}},',
+		'"updated_on":"2024-01-02T00:00:00Z"},',
+		'{"id":12,"title":"second pr","state":"OPEN",',
+		'"author":{"nickname":"tester","uuid":"abc-123"},',
+		'"source":{"branch":{"name":"feat/two"}},',
+		'"reviewers":[],',
+		'"links":{"html":{"href":"https://bitbucket.org/acme/widget/pull-requests/12"}},',
+		'"updated_on":"2024-01-03T00:00:00Z"}',
+		"]}",
+	})
 
 	before_each(function()
 		saved_cwd = vim.fn.getcwd()
@@ -111,6 +131,17 @@ describe("bitbucket provider through real CLI plumbing", function()
 			end
 		end
 		return nil
+	end
+
+	-- Count of `curl` invocations whose joined argv contains `needle`.
+	local function curl_count(needle)
+		local n = 0
+		for _, argv in ipairs(shim.calls("curl")) do
+			if join(argv):find(needle, 1, true) then
+				n = n + 1
+			end
+		end
+		return n
 	end
 
 	-- Every notification message emitted so far.
@@ -364,5 +395,133 @@ describe("bitbucket provider through real CLI plumbing", function()
 		if not pok then
 			error(perr, 0)
 		end
+	end)
+
+	it("resolve_thread POSTs to the comment's /resolve endpoint", function()
+		-- Seed caches so ensure_context skips the git/curl routing jobs; only the
+		-- resolve POST fires.
+		bb.repo_info = { owner = "acme", repo = "widget" }
+		bb.pr_number = 5
+		shim.stub("curl", { { match = { "-X", "POST" }, stdout = "{}" } })
+
+		local ok
+		bb.resolve_thread("100", function(success)
+			ok = success
+		end)
+		wait_for(function()
+			return ok ~= nil
+		end, "resolve_thread cb")
+
+		assert.is_true(ok)
+		local argv = shim.calls("curl")[1]
+		assert.truthy(join(argv):find("/repositories/acme/widget/pullrequests/5/comments/100/resolve", 1, true))
+		assert_flag_pair(argv, "-X", "POST")
+	end)
+
+	it("clear_comments forces the next get_comments to re-run the comments GET", function()
+		shim.stub("curl", {
+			API_USER,
+			PR_NUMBER_QUERY,
+			{ match = { "/diff" }, stdout_file = FIXTURES .. "/diff.txt" },
+			{ match = { "comments?pagelen=100" }, stdout_file = FIXTURES .. "/comments.json" },
+		})
+
+		local c1
+		bb.get_comments(function(c)
+			c1 = c
+		end)
+		wait_for(function()
+			return c1 ~= nil
+		end, "first get_comments")
+		assert.equals(1, curl_count("comments?pagelen=100"))
+
+		bb.clear_comments()
+
+		local c2
+		bb.get_comments(function(c)
+			c2 = c
+		end)
+		wait_for(function()
+			return c2 ~= nil
+		end, "second get_comments after clear")
+		-- git_user, repo_info, pr_number, and hunks stay cached, so only the
+		-- comments GET re-fires: 1 -> 2.
+		assert.equals(2, curl_count("comments?pagelen=100"))
+	end)
+
+	it("list_prs('mine') filters by author.uuid, normalizes, and caches per filter", function()
+		shim.stub("curl", {
+			API_USER_UUID,
+			{ match = { "pullrequests?state=OPEN&pagelen=50" }, stdout = LIST_BODY },
+		})
+
+		local prs
+		bb.list_prs("mine", function(p)
+			prs = p
+		end)
+		wait_for(function()
+			return prs ~= nil
+		end, "list_prs mine")
+
+		-- The list URL carries the url-encoded author.uuid DSL filter + OPEN state.
+		local idx = curl_index("pagelen=50")
+		assert.is_not_nil(idx, "list route was not hit")
+		local argv = shim.calls("curl")[idx]
+		assert.truthy(join(argv):find("q=author.uuid%3D%22abc-123%22", 1, true))
+		assert.truthy(join(argv):find("state=OPEN", 1, true))
+
+		-- Normalized from the 2-PR fixture; both PRs are authored by the viewer.
+		assert.equals(2, #prs)
+		assert.equals(11, prs[1].number)
+		assert.equals("first pr", prs[1].title)
+		assert.equals("tester", prs[1].author)
+		assert.equals("open", prs[1].state)
+		assert.equals("feat/one", prs[1].branch)
+		assert.is_true(prs[1].is_mine)
+		assert.same({ "bob" }, prs[1].reviewers)
+		assert.equals(12, prs[2].number)
+
+		-- Per-filter cache: a second "mine" call short-circuits, no new curl call.
+		local after_first = #shim.calls("curl")
+		local prs2
+		bb.list_prs("mine", function(p)
+			prs2 = p
+		end)
+		wait_for(function()
+			return prs2 ~= nil
+		end, "cached list_prs mine")
+		assert.equals(after_first, #shim.calls("curl"))
+	end)
+
+	it("list_prs('assigned') falls through to 'all' with a one-time notification", function()
+		shim.stub("curl", {
+			API_USER_UUID,
+			{ match = { "pullrequests?state=OPEN&pagelen=50" }, stdout = LIST_BODY },
+		})
+
+		local prs
+		bb.list_prs("assigned", function(p)
+			prs = p
+		end)
+		wait_for(function()
+			return prs ~= nil
+		end, "list_prs assigned")
+
+		-- Bitbucket Cloud has no assignee concept: the list URL emits no q= filter.
+		local idx = curl_index("pagelen=50")
+		assert.is_not_nil(idx, "list route was not hit")
+		local argv = shim.calls("curl")[idx]
+		assert.is_nil(join(argv):find("q=", 1, true), "assigned must not emit a q= filter")
+
+		-- A one-time notification announces the fallback to 'all'.
+		local found = false
+		for _, m in ipairs(notify_msgs()) do
+			if tostring(m):find("falling back to 'all'", 1, true) then
+				found = true
+			end
+		end
+		assert.is_true(found, "expected the assignee-fallback notification")
+
+		assert.equals(2, #prs)
 	end)
 end)
