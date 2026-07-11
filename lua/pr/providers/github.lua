@@ -626,7 +626,6 @@ function M.get_git_user(callback)
 	Job:new({
 		command = "gh",
 		args = args,
-		cmd = "./",
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
 				vim.notify(table.concat(args, " "))
@@ -772,7 +771,6 @@ function M.remove_reaction(comment_id, reaction_id, callback)
 			"Accept: application/vnd.github+json",
 			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id .. "/reactions/" .. reaction_id,
 		}
-		vim.notify(vim.inspect(args))
 		Job:new({
 			command = "gh",
 			args = args,
@@ -813,7 +811,7 @@ function M.reply(comment_id, body, callback)
 				"--method",
 				"POST",
 				"-H",
-				"'Accept: application/vnd.github+json'",
+				"Accept: application/vnd.github+json",
 				"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments/" .. comment_id .. "/replies",
 				"-f",
 				"body=" .. body,
@@ -872,7 +870,7 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 					"--method",
 					"POST",
 					"-H",
-					"'Accept: application/vnd.github+json'",
+					"Accept: application/vnd.github+json",
 					"/repos/" .. owner .. "/" .. repo .. "/pulls/" .. pr_number .. "/comments",
 					"-f",
 					"body=" .. body,
@@ -932,7 +930,7 @@ function M.edit_comment(comment_id, body, callback)
 			"--method",
 			"PATCH",
 			"-H",
-			"'Accept: application/vnd.github+json'",
+			"Accept: application/vnd.github+json",
 			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id,
 			"-f",
 			"body=" .. body,
@@ -1114,7 +1112,7 @@ function M.delete_comment(comment_id, callback)
 			"--method",
 			"DELETE",
 			"-H",
-			"'Accept: application/vnd.github+json'",
+			"Accept: application/vnd.github+json",
 			"/repos/" .. owner .. "/" .. repo .. "/pulls/comments/" .. comment_id,
 		}
 		Job:new({
