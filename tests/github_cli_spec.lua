@@ -397,4 +397,150 @@ describe("github provider through real CLI plumbing", function()
 		-- Full argv equality: no stray flags, no dead options bleeding into argv.
 		assert.same({ "api", "user", "-q", ".login" }, shim.calls("gh")[1])
 	end)
+
+	it("list_prs('mine') passes --author @me, normalizes, and caches per filter", function()
+		local prs_json = vim.json.encode({
+			{
+				number = 101,
+				title = "feat: alpha",
+				author = { login = "alice" },
+				state = "OPEN",
+				headRefName = "alpha",
+				url = "https://github.com/acme/widget/pull/101",
+				updatedAt = "2026-01-01T00:00:00Z",
+				isDraft = false,
+			},
+			{
+				number = 202,
+				title = "fix: beta",
+				author = { login = "bob" },
+				state = "OPEN",
+				headRefName = "beta",
+				url = "https://github.com/acme/widget/pull/202",
+				updatedAt = "2026-01-02T00:00:00Z",
+				isDraft = false,
+			},
+		})
+		shim.stub("gh", { { match = { "pr", "list" }, stdout = prs_json } })
+
+		local prs1
+		gh.list_prs("mine", function(p)
+			prs1 = p
+		end)
+		wait_for(function()
+			return prs1 ~= nil
+		end, "list_prs mine first")
+
+		-- `--author @me` is logged as two adjacent argv tokens.
+		local argv = shim.calls("gh")[1]
+		assert_flag_pair(argv, "--author", "@me")
+
+		-- The 2-PR fixture is normalized straight through to the callback.
+		assert.equals(2, #prs1)
+		assert.equals(101, prs1[1].number)
+		assert.equals("feat: alpha", prs1[1].title)
+		assert.equals(202, prs1[2].number)
+		assert.equals("fix: beta", prs1[2].title)
+
+		-- A second "mine" call short-circuits on the per-filter cache: no new gh run.
+		local prs2
+		gh.list_prs("mine", function(p)
+			prs2 = p
+		end)
+		wait_for(function()
+			return prs2 ~= nil
+		end, "list_prs mine second")
+		assert.equals(1, #shim.calls("gh"))
+	end)
+
+	it("list_prs('review-requested') passes the --search query token", function()
+		shim.stub("gh", { { match = { "pr", "list" }, stdout = "[]" } })
+
+		local prs
+		gh.list_prs("review-requested", function(p)
+			prs = p
+		end)
+		wait_for(function()
+			return prs ~= nil
+		end, "list_prs review-requested")
+
+		-- The whole search expression is a single argv token following --search.
+		local argv = shim.calls("gh")[1]
+		assert_flag_pair(argv, "--search", "review-requested:@me state:open")
+		assert.equals(0, #prs)
+	end)
+
+	it("checkout_pr runs `gh pr checkout N`, invokes checktime, and reports success", function()
+		shim.stub("gh", { { match = { "pr", "checkout", "7" } } })
+
+		-- Spy vim.cmd so we can prove the success path ran `checktime` (its buffer
+		-- reload) without staging an on-disk change. Restored before any assert so
+		-- a failing assertion can't leave the global wrapped for after_each's cd.
+		local saved_cmd = vim.cmd
+		local checktime_called = false
+		vim.cmd = function(c)
+			if c == "checktime" then
+				checktime_called = true
+			end
+			return saved_cmd(c)
+		end
+
+		local success, err_val, done
+		gh.checkout_pr(7, function(ok, err)
+			success, err_val, done = ok, err, true
+		end)
+		wait_for(function()
+			return done
+		end, "checkout_pr cb")
+
+		vim.cmd = saved_cmd
+
+		assert.is_true(success)
+		assert.is_nil(err_val)
+		assert.is_true(checktime_called)
+		-- Exact argv: no stray tokens leak into `gh pr checkout`.
+		assert.same({ "pr", "checkout", "7" }, shim.calls("gh")[1])
+		-- The success path emits no error notification.
+		assert.equals(0, #notifications)
+	end)
+
+	it("get_pr_number surfaces the install hint on unexpected gh output", function()
+		-- gh exits 0 but yields a non-numeric line: this is the get_pr_number
+		-- failure branch that carries the literal "Is a gh cli installed?" hint
+		-- (github.lua's exit != 0 branch reports "No PR open" instead -- see the
+		-- companion test below).
+		shim.stub("gh", { { match = { "pr", "view" }, stdout = "garbage\n" } })
+
+		gh.get_pr_number(function() end)
+		wait_for(function()
+			return #notifications > 0
+		end, "install-hint notification")
+
+		local found = false
+		for _, m in ipairs(notify_msgs()) do
+			if tostring(m):find("Is a gh cli installed?", 1, true) then
+				found = true
+			end
+		end
+		assert.is_true(found, "expected the install hint in a notification")
+	end)
+
+	it("get_pr_number reports 'No PR open' when gh exits non-zero", function()
+		-- A non-zero `gh pr view` is the ordinary no-PR-for-branch case, reported
+		-- with the branch message rather than the install hint.
+		shim.stub("gh", { { match = { "pr", "view" }, exit = 1 } })
+
+		gh.get_pr_number(function() end)
+		wait_for(function()
+			return #notifications > 0
+		end, "no-PR notification")
+
+		local found = false
+		for _, m in ipairs(notify_msgs()) do
+			if tostring(m):find("No PR open for this branch", 1, true) then
+				found = true
+			end
+		end
+		assert.is_true(found, "expected the no-PR notification")
+	end)
 end)
