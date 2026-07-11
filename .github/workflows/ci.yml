@@ -7,8 +7,12 @@ on:
 
 jobs:
   test:
-    name: Tests
+    name: Tests (nvim ${{ matrix.neovim-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim-version: ['v0.10.4', 'stable', 'nightly']
     steps:
       - uses: actions/checkout@v4
 
@@ -16,13 +20,19 @@ jobs:
         uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
-          version: stable
+          version: ${{ matrix.neovim-version }}
 
       - name: Cache plenary.nvim
         uses: actions/cache@v4
         with:
           path: /tmp/plenary.nvim
           key: plenary-${{ runner.os }}-v1
+
+      - name: Cache nui.nvim
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nui.nvim
+          key: nui-${{ runner.os }}-v1
 
       - name: Run tests
         run: make test
@@ -53,4 +63,19 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: latest
-          args: --check lua/ tests/
+          args: --check lua/ plugin/ tests/
+
+  docs:
+    name: helptags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Generate helptags
+        run: nvim --headless -c 'helptags doc' -c 'q'
