@@ -10,10 +10,10 @@ Runtime dependencies (required at the user's site): `nui.nvim` (UI primitives) a
 
 ## Commands
 
-- `make test` — runs `plenary.busted` over `tests/`. `tests/minimal_init.lua` shallow-clones `plenary.nvim` to `$PLENARY_DIR` (default `/tmp/plenary.nvim`) on first run.
+- `make test` — runs `plenary.busted` over `tests/`. `tests/minimal_init.lua` shallow-clones `plenary.nvim` to `$PLENARY_DIR` (default `/tmp/plenary.nvim`) **and** `nui.nvim` to `$NUI_DIR` (default `/tmp/nui.nvim`) on first run, then adds `./tests/?.lua` to `package.path` so `helpers.*` resolve.
 - `make lint` — `luacheck lua/ tests/` (config in `.luacheckrc`, `vim` declared as a global).
 - `make format` / `make format-check` — `stylua` (config in `stylua.toml`: tabs, 160-column).
-- Run one spec: `nvim --headless --noplugin -u tests/minimal_init.lua -c "PlenaryBustedFile tests/<spec>.lua" -c "qa!"`.
+- Run one spec: `nvim --headless --noplugin -u tests/minimal_init.lua -c 'lua require("plenary.busted").run("tests/<spec>.lua")' -c "qa!"`. **Do not** use `-c "PlenaryBustedFile ..."` — it forks a child nvim that does **not** inherit `minimal_init`, so nui isn't on the rtp and `helpers.*` don't resolve, and every harness-dependent flow spec fails spuriously. The `require(...).run(...)` form runs in-process and keeps the harness.
 
 CI (`.github/workflows/ci.yml`) runs tests, luacheck, and `stylua --check` on push and PR.
 
@@ -172,6 +172,57 @@ Always real on all three:
 
 - All core comment/hunk methods, `thread_url`, the draft-review surface (gitlab/bitbucket use `review_local` for the local queue).
 
+## Testing
+
+`make test` drives `plenary.busted` over every `tests/*_spec.lua` sequentially. Specs split into two tiers: **unit specs** exercise pure helpers directly (no nui, no subprocess), and **flow specs** (`tests/flow_*_spec.lua`) mount real UI and run real keymaps over a fake provider inside a headless harness.
+
+### The harness (`minimal_init.lua`)
+
+`tests/minimal_init.lua` prepends the repo root, shallow-clones both `plenary.nvim` (→ `$PLENARY_DIR`, default `/tmp/plenary.nvim`) and `nui.nvim` (→ `$NUI_DIR`, default `/tmp/nui.nvim`) on first run and prepends each to the rtp, then appends `./tests/?.lua` to `package.path` so every `tests/helpers/<x>.lua` resolves as `require("helpers.<x>")`. `tests/harness_smoke_spec.lua` asserts both invariants (nui `require`-able, helpers on `package.path`). Because `PlenaryBustedFile`'s child nvim does **not** inherit `-u minimal_init.lua`, run a single spec with the in-process `require("plenary.busted").run(...)` form (see Commands) — `PlenaryBustedFile` drops nui + helpers and fails every harness-dependent spec spuriously.
+
+### Testing layers (`tests/helpers/`)
+
+Three helpers back the flow specs; each installs cleanly and restores on teardown.
+
+**`fake_provider.lua`** — a full-contract in-memory provider (implements every name in `tests/provider_contract_spec.lua`).
+
+- `install(name, scenario?) → fake, uninstall`: registers the fake under `package.loaded["pr.providers." .. name]` and flips `config.opts.provider` to `name`; the returned `uninstall()` restores both. Call it in `before_each`, `uninstall()` in `after_each`. `M.new(scenario)` builds the table directly (used by `install`).
+- **Scenario** is the mutable source of truth (`comments`, `hunks`, `prs`, `pending`, `pr_metadata`, `checks`, `collaborators`, `issues`, `git_root`/`git_user`/`pr_number`/`base_sha`, ...), with sane defaults deep-merged in. Getters copy the matching field into the exposed cache field (`fake.comments`, ...).
+- **Calls log**: every method appends `{ method, args = {...} }` to `fake.calls`; `fake_provider.called(fake, method)` returns the first logged call (or nil). Assert both that a call fired and its args.
+- **Deferred/fire**: methods run their callback synchronously by default. Set `fake.deferred[name] = true` to capture the callback instead, then `fake.fire(name)` runs the captured one later — this drives the loading→loaded transition of an async fetch on demand.
+- **Scenario mutation**: mutators (`reply`, `comment`, `edit_comment`, `resolve_thread`, ...) update `scenario` in place, so a following getter observes the change and the re-render shows it. `clear_*` reset only the exposed cache fields (not `scenario`), mirroring the real invalidate-then-refetch.
+
+**`ui_env.lua`** — a headless UI sandbox.
+
+- `setup() → env`: widens the editor (220×60) and swaps `vim.notify`, `vim.ui.select`, `vim.ui.open`, `vim.fn.confirm` for non-blocking capturing stand-ins; also redirects `drafts` / `review_local` on-disk paths to tempfiles.
+- `env.notifications` / `env.opened_urls` collect captured `vim.notify` / `vim.ui.open` calls. `env.confirm_choice` (int the `confirm` stub returns) and `env.select_choice` (int index, or a predicate `fn(item)->bool`, consumed by the `select` stub) script the prompts **before** you trigger them.
+- `env.feed(keys)` types termcodes (`nvim_feedkeys` with mode `"mx"`, so mappings run and it blocks until drained).
+- `env.wait_for(pred, ms?=2000, label?)` spins `vim.wait` until `pred` is true, asserting with `label` on timeout — the workhorse for awaiting async render/call state.
+- `env.floats()` lists currently-open floating windows.
+- `env.teardown()` restores every stub + dimensions, closes floats, and wipes all buffers. Always pair it with `setup()`.
+
+**`git_repo.lua`** — real throwaway git repos for integration specs; every command runs via `git -C root` (independent of Neovim's cwd).
+
+- `create(opts?) → repo`: inits a `main` repo with a test identity + `origin` remote (`opts.origin`, default a github URL), writes `opts.files`, makes an initial commit.
+- `repo.write(relpath, lines)`, `repo.commit(msg?) → sha`, `repo.checkout(branch, create?)`, `repo.head() → sha`, `repo.cleanup()` (deletes the tree — call in `after_each`).
+
+### Writing a flow spec
+
+1. Guard on nui at the top: `if not pcall(require, "nui.popup") then return end` (a unit-only environment without nui then skips the file cleanly).
+2. `before_each`: `env = ui_env.setup()`; `fake, uninstall = fake_provider.install("<name>", { <scenario> })`.
+3. **Mount** the real UI (e.g. `local layout, comments_popup, new_reply_popup = ui.make_comments_layout(thread, relative_path)` then `layout:mount()`), and **`env.wait_for`** until the expected rendered text appears in the popup buffer — never assert immediately after mount, render is scheduled.
+4. **`env.feed`** the real keymap (`<CR>`, `r`, `a`, ...) — or set the buffer lines and focus the target window first.
+5. **`env.wait_for`** on the observable effect: `fake_provider.called(fake, "reply")`, a mutated `scenario`, or re-rendered text — then **assert** the recorded call args / final state.
+6. `after_each`: drain any scheduled re-render (`vim.wait(100, function() return false end)`) **before** `uninstall()` + `env.teardown()`, so nui's buffer-wipe auto-unmount can't race a pending re-render.
+
+### Calling `pr.setup()` in a spec (danger)
+
+`pr.setup()` with defaults starts a **live 300s libuv refresh timer** and, via `run_on_start.comments = true`, **shells out** to `gh`. Every `setup()` in a spec MUST pass `run_on_start = { comments = false, hunks = false }` and `auto_refresh = { interval = 0, on_branch_change = false, on_head_change = false }` unless the case under test needs one enabled, and `after_each` MUST call `pr.set_refresh_interval(0)` (stops + closes the timer) and delete every `PR*` augroup so nothing leaks into later specs. Reload `package.loaded["pr"] = nil` per test to reset `setup()`'s internal state (`last_branch`, timer handle), but never reload `pr.config` — the provider proxy captured it at load, so reloading desyncs them.
+
+### nui gotchas
+
+- `Popup:map(mode, ...)` forwards `mode` straight to `nvim_buf_set_keymap`, which requires a **string**. A table like `{ "n", "i" }` raises `Invalid 'mode'` and crashes the layout at construction (two such production crashes were fixed on this branch). Bind each mode in a `for _, mode in ipairs({ "n", "i" }) do popup:map(mode, ...) end` loop.
+
 ## Conventions
 
 - Lua module pattern: every file is `local M = {} ... return M`.
@@ -184,7 +235,7 @@ Always real on all three:
 ## Things to know before changing behavior
 
 - Adding a new provider method: add it to `providers/interface.lua` docs, real impl on `providers/github.lua`, **at minimum a silent stub** on `providers/gitlab.lua` and `providers/bitbucket.lua`, then add to `tests/provider_contract_spec.lua` `REQUIRED_METHODS` and `lua/pr/health.lua` `SURFACE`. The contract spec will fail loudly if any provider is missing the method.
-- The `M.actions["unresolve"].key` and `M.actions["resolve"].key` both bind `"r"` in normal mode. The popup map loop gates `popup:map` on `action.can_perform(thread, comment)`, so only the applicable one is bound. Don't "fix" the duplicate key — and **don't drop the `can_perform` gate** in that loop, or the collision returns.
+- The `M.actions["unresolve"].key` and `M.actions["resolve"].key` both bind `"r"` in normal mode. In the unified `make_comments_layout`, the per-action keymap loop binds **every** action's key **unconditionally** (nui's `:map` is last-write-wins, so which of the two `r` closures survives is just `pairs()` order). The surviving closure resolves the applicable action **at dispatch time**: it runs its own `action.can_perform(thread, comment)` for the focused thread/comment, and if that is false it scans **sibling actions sharing the same `key`+`mode`** and dispatches to whichever `can_perform` returns true (fixed in commit `afdc887`; the earlier "gate `popup:map` on `can_perform`" scheme only worked for the legacy single-comment popup). `can_perform` is still the gate — it's just evaluated across every action on the binding instead of trusting binding order. Don't "fix" the duplicate `r` key, and **don't drop the sibling `can_perform` fall-through** in that dispatch closure, or only one of resolve/unresolve stays reachable.
 - Similarly, `M.actions["apply_suggestion"].key` is `"a"`. The dispatcher falls through to `try_start_inline_edit` when `can_perform` returns false, so `a` still opens insert mode on user-authored comments without suggestions.
 - `cycle_comments_in_buffer` and `cycle_hunks_in_buffer` assume threads/hunks come back in ascending line order from the provider; preserve this when modifying the parsing in `parse_diff_hunks` or the GraphQL response handling.
 - `parse_diff_hunks` (file-local in `providers/github.lua`) is unit-tested via the `M._parse_diff_hunks` test-only export. If you refactor the parser, update both `tests/parse_diff_hunks_spec.lua` and the export.

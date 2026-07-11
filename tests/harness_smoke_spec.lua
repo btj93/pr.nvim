@@ -8,8 +8,8 @@ describe("test harness environment", function()
 
 	it("resolves helpers via package.path", function()
 		-- Any file under tests/helpers/<x>.lua must load as helpers.<x>.
-		local ok, err = pcall(require, "helpers.probe")
+		local ok, err = pcall(require, "helpers.fake_provider")
 		assert.is_true(ok, tostring(err))
-		assert.equals("probe", require("helpers.probe").name)
+		assert.equals("function", type(require("helpers.fake_provider").install))
 	end)
 end)
