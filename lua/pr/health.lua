@@ -66,6 +66,15 @@ end
 function M.check()
 	vim.health.start("pr.nvim")
 
+	-- Version floor first: everything below assumes 0.10+ APIs.
+	if vim.fn.has("nvim-0.10") == 1 then
+		vim.health.ok("Neovim >= 0.10")
+	else
+		vim.health.error("Neovim 0.10 or newer is required", {
+			"Upgrade Neovim to 0.10+; pr.nvim relies on 0.10 APIs.",
+		})
+	end
+
 	local config = require("pr.config")
 	local provider_name = config.opts.provider
 	vim.health.ok("provider: " .. tostring(provider_name))
