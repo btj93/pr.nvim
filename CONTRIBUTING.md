@@ -22,9 +22,9 @@ git clone https://github.com/<you>/pr.nvim
 cd pr.nvim
 
 make test          # run the full plenary.busted suite over tests/
-make lint          # luacheck lua/ tests/
-make format        # stylua lua/ tests/  (rewrites in place)
-make format-check  # stylua --check lua/ tests/  (CI uses this)
+make lint          # luacheck lua/ plugin/ tests/
+make format        # stylua lua/ plugin/ tests/  (rewrites in place)
+make format-check  # stylua --check lua/ plugin/ tests/  (CI uses this)
 ```
 
 On the first `make test`, `tests/minimal_init.lua` shallow-clones

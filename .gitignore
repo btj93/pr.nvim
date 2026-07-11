@@ -32,3 +32,4 @@ doc/tags
 
 # Local-only design docs / superpowers specs & plans (may contain personal data)
 docs/
+.superpowers/

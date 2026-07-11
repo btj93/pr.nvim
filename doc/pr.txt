@@ -1,7 +1,7 @@
 *pr.txt*  PR review comments and diff hunks inline in Neovim
 
 Author:   btj93  <https://github.com/btj93/pr.nvim>
-License:  see repository
+License:  Apache-2.0 (see LICENSE)
 
 ==============================================================================
 CONTENTS                                                         *pr-contents*

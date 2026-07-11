@@ -44,9 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The new-comment composer no longer crashes on open. Binding `<M-s>` with a
   table mode (`{ "n", "i" }`) raised `Invalid 'mode'` and crashed the layout on
   mount; each mode is now bound separately.
-- `:PRComment` on (or within two lines of) the last line of a file no longer
-  crashes with "Index out of bounds" — the visual-selection capture over-read
-  two lines past EOF.
+- Filing a new comment from a visual selection on (or within two lines of) the
+  last line of a file no longer crashes with "Index out of bounds". The
+  visual-selection comment composer (`comment.M.comment`) over-read two lines
+  past EOF when capturing the selected text.
 - Forward comment/hunk cycling now lands on the *nearest* thread/hunk below the
   cursor and wraps past the last item, instead of jumping to the farthest one
   and stopping at the end.

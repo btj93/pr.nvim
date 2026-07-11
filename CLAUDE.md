@@ -11,11 +11,11 @@ Runtime dependencies (required at the user's site): `nui.nvim` (UI primitives) a
 ## Commands
 
 - `make test` — runs `plenary.busted` over `tests/`. `tests/minimal_init.lua` shallow-clones `plenary.nvim` to `$PLENARY_DIR` (default `/tmp/plenary.nvim`) **and** `nui.nvim` to `$NUI_DIR` (default `/tmp/nui.nvim`) on first run, then adds `./tests/?.lua` to `package.path` so `helpers.*` resolve.
-- `make lint` — `luacheck lua/ tests/` (config in `.luacheckrc`, `vim` declared as a global).
+- `make lint` — `luacheck lua/ plugin/ tests/` (config in `.luacheckrc`, `vim` declared as a global).
 - `make format` / `make format-check` — `stylua` (config in `stylua.toml`: tabs, 160-column).
 - Run one spec: `nvim --headless --noplugin -u tests/minimal_init.lua -c 'lua require("plenary.busted").run("tests/<spec>.lua")' -c "qa!"`. **Do not** use `-c "PlenaryBustedFile ..."` — it forks a child nvim that does **not** inherit `minimal_init`, so nui isn't on the rtp and `helpers.*` don't resolve, and every harness-dependent flow spec fails spuriously. The `require(...).run(...)` form runs in-process and keeps the harness.
 
-CI (`.github/workflows/ci.yml`) runs tests, luacheck, and `stylua --check` on push and PR.
+CI (`.github/workflows/ci.yml`) runs four jobs on push and PR: `test` over a Neovim matrix (`v0.10.4` / `stable` / `nightly`, with `nightly` set `continue-on-error` so it never fails the badge), `luacheck`, `stylua --check`, and a `docs` job that generates vimdoc helptags.
 
 ## Architecture
 
@@ -38,7 +38,8 @@ Two strategy points are resolved by string lookup:
 
 | Module | Responsibility |
 |---|---|
-| `init.lua` | `setup()`, user commands, auto-refresh timers/autocmds, public M.* aliases (status, winbar, comment_with_suggestion, etc.) |
+| `plugin/pr.lua` | Classic plugin entry (sourced at startup): registers every `:PR*` command as a lazy bootstrap stub that requires + sets up `pr` on first use. Two clobber-guard belts (`vim.g.loaded_pr` + `:PRRefresh` existence check) prevent it from overwriting the real commands after `setup()` ran. |
+| `init.lua` | `setup()`, user commands (`M._register_commands` + the `COMMANDS` table, `M._ensure_setup`, `M._dispatch`), auto-refresh timers/autocmds, public M.* aliases (status, winbar, comment_with_suggestion, etc.) |
 | `provider.lua` | Provider-resolution proxy |
 | `providers/{github,gitlab,bitbucket}.lua` | Real provider implementations (one CLI each) |
 | `providers/interface.lua` | LuaCATS types + method contract (no runtime code) |
@@ -263,6 +264,8 @@ All three pickers (`pickers/{snacks,telescope,fzf}.lua`) share a **uniform pure 
 ## Things to know before changing behavior
 
 - Adding a new provider method: add it to `providers/interface.lua` docs, real impl on `providers/github.lua`, **at minimum a silent stub** on `providers/gitlab.lua` and `providers/bitbucket.lua`, then add to `tests/provider_contract_spec.lua` `REQUIRED_METHODS` and `lua/pr/health.lua` `SURFACE`. The contract spec will fail loudly if any provider is missing the method.
+- `plugin/pr.lua` is the zero-cost bootstrap: at startup it registers each `:PR*` name as a permissive stub (`nargs="*"`, `range`, `bang`) that on first invocation calls `require("pr")._ensure_setup()` (runs `setup({})` once, which re-registers the **real** strict commands over the stubs) then `require("pr")._dispatch(name, a)` — handing the already-parsed `a` straight through so bang/range/nargs parity is preserved without reconstructing `vim.cmd`. **Two clobber belts** keep it from ever overwriting the real commands: `vim.g.loaded_pr` (set by both the plugin file and `M.setup`) and a `vim.fn.exists(":PRRefresh") == 2` guard for exotic orderings where `setup()` ran without the flag. Registering the real commands is idempotent (nvim overwrites stubs silently) whether the user hits a command first or calls `setup()` themselves. Adding a new `:PR*` command means adding its name to the `commands` list in `plugin/pr.lua` too, not just the `COMMANDS` table in `init.lua`.
+- `:PRComment` opens the review-thread popup for the thread under the cursor (equivalent to `require("pr").popup()`); the visual-selection new-comment composer is `comment.M.comment`.
 - The `M.actions["unresolve"].key` and `M.actions["resolve"].key` both bind `"r"` in normal mode. In the unified `make_comments_layout`, the per-action keymap loop binds **every** action's key **unconditionally** (nui's `:map` is last-write-wins, so which of the two `r` closures survives is just `pairs()` order). The surviving closure resolves the applicable action **at dispatch time**: it runs its own `action.can_perform(thread, comment)` for the focused thread/comment, and if that is false it scans **sibling actions sharing the same `key`+`mode`** and dispatches to whichever `can_perform` returns true (fixed in commit `afdc887`; the earlier "gate `popup:map` on `can_perform`" scheme only worked for the legacy single-comment popup). `can_perform` is still the gate — it's just evaluated across every action on the binding instead of trusting binding order. Don't "fix" the duplicate `r` key, and **don't drop the sibling `can_perform` fall-through** in that dispatch closure, or only one of resolve/unresolve stays reachable.
 - Similarly, `M.actions["apply_suggestion"].key` is `"a"`. The dispatcher falls through to `try_start_inline_edit` when `can_perform` returns false, so `a` still opens insert mode on user-authored comments without suggestions.
 - `cycle_comments_in_buffer` and `cycle_hunks_in_buffer` assume threads/hunks come back in ascending line order from the provider; preserve this when modifying the parsing in `parse_diff_hunks` or the GraphQL response handling.
