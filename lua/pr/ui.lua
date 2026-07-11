@@ -667,8 +667,9 @@ function M.make_comments_layout(thread, relative_path)
 			},
 		},
 		buf_options = {
+			-- Only modifiable=false — writers toggle it around each render. Setting
+			-- readonly=true too made every render log "W10: Changing a readonly file".
 			modifiable = false,
-			readonly = true,
 			filetype = "markdown",
 		},
 		win_options = {
@@ -803,9 +804,13 @@ function M.make_comments_layout(thread, relative_path)
 				for _, t in ipairs(file_threads) do
 					if t.id == thread.id then
 						thread = t
-						if vim.api.nvim_buf_is_valid(comments_popup.bufnr) then
-							re_render()
+						-- nui's unmount() sets comments_popup.bufnr = nil, and
+						-- nvim_buf_is_valid(nil) is a type error — bail if the popup is
+						-- gone (the user closed it before this re-fetch landed).
+						if not comments_popup.bufnr or not vim.api.nvim_buf_is_valid(comments_popup.bufnr) then
+							return
 						end
+						re_render()
 						return
 					end
 				end
@@ -1222,8 +1227,9 @@ function M.make_pr_info_layout(metadata, checks, callbacks)
 			text = { top = string.format(" PR #%d ", metadata.number) },
 		},
 		buf_options = {
+			-- readonly omitted on purpose: the BufWinEnter writer toggles modifiable
+			-- to repaint, and readonly=true would make that log a spurious W10.
 			modifiable = false,
-			readonly = true,
 			filetype = "markdown",
 		},
 		win_options = {
@@ -1337,7 +1343,9 @@ function M.make_review_layout(pending, callbacks)
 
 	local list_popup = Popup({
 		border = { style = "rounded", text = { top = " Pending review (" .. tostring(pending and #pending or 0) .. ") " } },
-		buf_options = { modifiable = false, readonly = true },
+		-- readonly omitted: the post-mount writer toggles modifiable to fill the
+		-- list, and readonly=true would make that log a spurious W10.
+		buf_options = { modifiable = false },
 		win_options = { wrap = false, foldenable = false },
 	})
 	local body_popup = Popup({
