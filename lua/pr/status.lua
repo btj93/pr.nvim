@@ -1,5 +1,9 @@
 -- Status counters and winbar token for pr.nvim.
 -- Cheap to call from statusline plugins; reads only in-memory provider state.
+--
+-- Note: PRStatus.on_buffer is reserved and always 0 — compute() aggregates
+-- across the whole PR and carries no buffer context. Live per-buffer counts
+-- come from M.compute_for_buffer(bufnr).
 
 local M = {}
 
@@ -9,7 +13,7 @@ local M = {}
 ---@field unresolved integer
 ---@field resolved integer
 ---@field outdated integer
----@field on_buffer integer
+---@field on_buffer integer reserved — always 0; use compute_for_buffer() for live per-buffer counts
 ---@field pending_review integer
 
 local function provider()
@@ -26,6 +30,7 @@ function M.compute()
 		unresolved = 0,
 		resolved = 0,
 		outdated = 0,
+		-- Reserved: stays 0 (no buffer context here); see M.compute_for_buffer.
 		on_buffer = 0,
 		pending_review = 0,
 	}
