@@ -1312,7 +1312,13 @@ function M.make_pr_edit_layout(metadata, callbacks)
 	title_popup:map("i", "<CR>", "<Nop>", { noremap = true })
 
 	for _, p in ipairs({ title_popup, body_popup }) do
-		p:map({ "n", "i" }, "<C-s>", submit, { noremap = true })
+		-- nui's Popup:map forwards `mode` straight to nvim_buf_set_keymap, which
+		-- requires a string; a table like { "n", "i" } raises "Invalid 'mode'" and
+		-- crashes the layout on mount. Bind each mode separately (mirrors the
+		-- new-comment composer's <M-s> fix).
+		for _, mode in ipairs({ "n", "i" }) do
+			p:map(mode, "<C-s>", submit, { noremap = true })
+		end
 		p:map("n", "<Esc><Esc>", cancel, { noremap = true })
 		p:map("n", "q", cancel, { noremap = true })
 	end
