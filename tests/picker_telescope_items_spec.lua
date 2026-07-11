@@ -246,6 +246,10 @@ describe("telescope picker entry builders + confirm dispatchers", function()
 			assert.equals("5 fix: x bob", e2.ordinal)
 		end)
 
+		it("returns no entries for a nil PR list", function()
+			assert.equals(0, #telescope._build_pr_items(nil))
+		end)
+
 		it("coalesces nil title/author/state/branch/url to empty strings", function()
 			local items = telescope._build_pr_items({ { number = 9 } })
 			assert.equals("", items[1].value.title)

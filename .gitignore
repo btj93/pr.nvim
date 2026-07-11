@@ -29,3 +29,6 @@ doc/tags
 # Local environment overrides
 .env
 .env.local
+
+# Local-only design docs / superpowers specs & plans (may contain personal data)
+docs/

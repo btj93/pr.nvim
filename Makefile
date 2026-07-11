@@ -8,10 +8,10 @@ test:
 		-c "qa!"
 
 lint:
-	luacheck lua/ tests/
+	luacheck lua/ plugin/ tests/
 
 format:
-	stylua lua/ tests/
+	stylua lua/ plugin/ tests/
 
 format-check:
-	stylua --check lua/ tests/
+	stylua --check lua/ plugin/ tests/

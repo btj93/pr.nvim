@@ -89,7 +89,7 @@ end
 ---@return table[]
 function M._build_pr_items(prs)
 	local items = {}
-	for _, pr in ipairs(prs) do
+	for _, pr in ipairs(prs or {}) do
 		local display = string.format("#%-5d %-8s %s  @%s", pr.number, pr.state or "", pr.title or "", pr.author or "")
 		table.insert(items, {
 			value = {

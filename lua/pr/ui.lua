@@ -39,8 +39,9 @@ M.reply_actions = {
 	saved_reply = {},
 }
 
--- FIXME: lift this into config; the outer layout width (80) and the per-popup
--- content width (78 = 80 - left/right border) must stay in sync.
+-- Hardcoded content width shared by every popup in this module. The outer
+-- layout width (80) and this content width (78 = 80 - left/right border) must
+-- stay in sync; several places below multiply or subtract from BODY_WIDTH.
 local BODY_WIDTH = 78
 
 --- Map a CheckRun's status/conclusion to a single-glyph indicator. Used by
@@ -260,7 +261,6 @@ local function make_new_reply_popup(enter, bottom_text)
 	bottom_text = bottom_text or "[ 󰌑 Submit ]"
 
 	enter = enter or false
-	-- FIXME: use gh.get_git_user
 	local reply_popup = Popup({
 		border = {
 			padding = {

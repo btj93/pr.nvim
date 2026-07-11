@@ -132,7 +132,6 @@ end
 ---@param relative_path string?
 ---@param line integer?
 function M.popup(relative_path, line)
-	-- TODO: check gh.get_comments is done
 	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})

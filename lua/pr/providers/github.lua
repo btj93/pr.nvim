@@ -802,7 +802,6 @@ function M.reply(comment_id, body, callback)
 			-- gh api \
 			--   --method POST \
 			--   -H "Accept: application/vnd.github+json" \
-			--   -H "X-GitHub-Api-Version: 2022-11-28" \
 			--   /repos/OWNER/REPO/pulls/PULL_NUMBER/comments/COMMENT_ID/replies \
 			--    -f 'body=Great stuff!'
 
@@ -861,7 +860,6 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 				-- gh api \
 				--   --method POST \
 				--   -H "Accept: application/vnd.github+json" \
-				--   -H "X-GitHub-Api-Version: 2022-11-28" \
 				--   /repos/OWNER/REPO/pulls/PULL_NUMBER/comments \
 				--    -f 'body=Great stuff!' -f 'commit_id=6dcb09b5b57875f334f61aebed695e2e4193db5e' -f 'path=file1.txt' -F "start_line=1" -f 'start_side=RIGHT' -F "line=2" -f 'side=RIGHT'
 
@@ -921,7 +919,6 @@ function M.edit_comment(comment_id, body, callback)
 		-- gh api \
 		--   --method PATCH \
 		--   -H "Accept: application/vnd.github+json" \
-		--   -H "X-GitHub-Api-Version: 2022-11-28" \
 		--   /repos/OWNER/REPO/pulls/comments/COMMENT_ID \
 		--    -f 'body=I like this too!'
 
@@ -1105,7 +1102,6 @@ function M.delete_comment(comment_id, callback)
 		--   gh api \
 		-- --method DELETE \
 		-- -H "Accept: application/vnd.github+json" \
-		-- -H "X-GitHub-Api-Version: 2022-11-28" \
 		-- /repos/OWNER/REPO/pulls/comments/COMMENT_ID
 		local args = {
 			"api",

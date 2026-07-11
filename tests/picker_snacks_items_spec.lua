@@ -206,6 +206,10 @@ describe("snacks picker item builders + confirm dispatchers", function()
 			assert.equals("draft", items[2].data.state)
 		end)
 
+		it("returns no rows for a nil PR list", function()
+			assert.equals(0, #snacks._build_pr_items(nil))
+		end)
+
 		it("coalesces nil title/author/state/branch/url to empty strings", function()
 			local items = snacks._build_pr_items({ { number = 9 } })
 			assert.equals("#9  ", items[1].text)

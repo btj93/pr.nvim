@@ -39,6 +39,24 @@ make test
 
 (defaults: `PLENARY_DIR=/tmp/plenary.nvim`, `NUI_DIR=/tmp/nui.nvim`.)
 
+### Editor / lua-language-server
+
+A checked-in [`.luarc.json`](.luarc.json) configures
+[lua-language-server](https://github.com/LuaLS/lua-language-server) for
+contributors (JSON has no comments, so the rationale lives here):
+
+- `runtime.version: LuaJIT` — Neovim embeds LuaJIT.
+- `workspace.library: ["$VIMRUNTIME/lua"]` — pulls in the Neovim runtime so
+  `vim.*` APIs resolve. `luals` expands the literal `$VIMRUNTIME` itself.
+- `workspace.checkThirdParty: false` — suppresses the "apply library
+  configuration?" prompt for bundled libraries.
+- `diagnostics.globals` — declares `vim` plus the busted globals
+  (`describe`, `it`, `before_each`, `after_each`, `assert`, `async`) so
+  `undefined-global` stays quiet without blanket-disabling the check.
+- `diagnostics.disable: ["missing-fields"]` — the provider data shapes and UI
+  code construct partial `---@class` tables by design; the missing-field
+  warnings are noise here.
+
 ### Running a single spec
 
 Do **not** use `-c "PlenaryBustedFile ..."`: it forks a child nvim that does not

@@ -85,7 +85,7 @@ end
 ---@return snacks.picker.finder.Item[]
 function M._build_pr_items(prs)
 	local items = {}
-	for _, pr in ipairs(prs) do
+	for _, pr in ipairs(prs or {}) do
 		table.insert(items, {
 			text = string.format("#%d %s %s", pr.number, pr.title or "", pr.author or ""),
 			data = {

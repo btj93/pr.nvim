@@ -190,7 +190,8 @@ end
 ---@param start_line? integer
 ---@param end_line? integer
 function M.comment(relative_path, start_line, end_line)
-	-- TODO: permission check
+	-- No client-side permission check: the provider CLI (gh/glab/curl) enforces
+	-- write access server-side and its error is surfaced by the submit path.
 	git.get_git_root(vim.schedule_wrap(function(git_root)
 		if git_root == nil or git_root == "" then
 			vim.api.nvim_echo({ { "Not a git repository.", "WarningMsg" } }, true, {})

@@ -45,11 +45,6 @@ function M.is_valid_buf(buf)
 	if buftype ~= "" and buftype ~= "quickfix" then
 		return false
 	end
-	-- local filetype = vim.api.nvim_buf_get_option(buf, "filetype")
-	-- TODO: config
-	-- if vim.tbl_contains({}, filetype) then
-	--   return false
-	-- end
 	return true
 end
 
