@@ -9,6 +9,9 @@ jobs:
   test:
     name: Tests (nvim ${{ matrix.neovim-version }})
     runs-on: ubuntu-latest
+    # Nightly is informational: don't let a broken upstream nightly fail the
+    # badge / block merges. The pinned floor and stable must stay green.
+    continue-on-error: ${{ matrix.neovim-version == 'nightly' }}
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +65,9 @@ jobs:
         uses: JohnnyMorganz/stylua-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: latest
+          # Pin to a concrete release so formatting output can't drift under us
+          # (matches the repo's local stylua). Bump deliberately.
+          version: 2.5.2
           args: --check lua/ plugin/ tests/
 
   docs:
