@@ -14,7 +14,7 @@ local this_file = debug.getinfo(1, "S").source:sub(2)
 local FIXTURES = vim.fn.fnamemodify(this_file, ":p:h") .. "/fixtures/github"
 
 describe("github provider through real CLI plumbing", function()
-	local shim, repo, gh, saved_cwd, saved_notify, notifications
+	local shim, repo, gh, saved_cwd, saved_notify, notifications, saved_debug
 
 	-- Shared route: `gh pr view --json number --jq .number` resolves the PR
 	-- number for every chain that needs it.
@@ -22,6 +22,8 @@ describe("github provider through real CLI plumbing", function()
 
 	before_each(function()
 		saved_cwd = vim.fn.getcwd()
+		saved_debug = require("pr.config").opts.debug
+		require("pr.config").opts.debug = false
 		notifications = {}
 		saved_notify = vim.notify
 		vim.notify = function(msg, level)
@@ -40,6 +42,7 @@ describe("github provider through real CLI plumbing", function()
 
 	after_each(function()
 		pcall(vim.cmd.cd, saved_cwd)
+		require("pr.config").opts.debug = saved_debug
 		vim.notify = saved_notify
 		pcall(function()
 			shim.uninstall()
@@ -252,6 +255,95 @@ describe("github provider through real CLI plumbing", function()
 		assert.is_nil(joined:find("'Accept", 1, true), "header must not carry literal quotes")
 		assert.truthy(joined:find("/repos/acme/widget/pulls/42/comments/1001/replies", 1, true))
 		assert_flag_pair(argv, "-f", "body=hello")
+	end)
+
+	it("failed reply diagnostics do not expose the review body or raw argv", function()
+		local private_body = "GITHUB PRIVATE REVIEW BODY"
+
+		local function run_failed_reply()
+			gh.repo_info = { owner = "acme", repo = "widget" }
+			gh.pr_number = 42
+			shim.stub("gh", {
+				{ match = { "api", "--method", "POST" }, exit = 1, stderr = "request rejected: " .. private_body },
+			})
+			local done
+			gh.reply(1001, private_body, function(ok)
+				done = ok
+			end)
+			wait_for(function()
+				return done ~= nil
+			end, "failed reply cb")
+			assert.is_false(done)
+			return table.concat(notify_msgs(), "\n")
+		end
+
+		local normal = run_failed_reply()
+		assert.truthy(normal:find("Is a gh cli installed?", 1, true))
+		assert.is_nil(normal:find(private_body, 1, true))
+		assert.is_nil(normal:find("body=", 1, true))
+
+		notifications = {}
+		require("pr.config").opts.debug = true
+		local debugged = run_failed_reply()
+		assert.truthy(debugged:find("Is a gh cli installed?", 1, true))
+		assert.truthy(debugged:find("body=<redacted>", 1, true))
+		assert.is_nil(debugged:find(private_body, 1, true))
+	end)
+
+	it("a failed review-thread fetch exposes neither the GraphQL document nor the response body", function()
+		require("pr.config").opts.debug = true
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{
+				match = { "api", "graphql" },
+				exit = 1,
+				stdout = '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"body":"LEAKED THREAD BODY"}]}}]}}}}}',
+				stderr = "GraphQL: rate limit exceeded",
+			},
+		})
+
+		-- get_comments' failure branch returns WITHOUT invoking the callback
+		-- (github.lua:558) -- a fetch-lifecycle bug owned by the next slice of
+		-- the spec, not this one. So wait on the notification, not a callback
+		-- that never fires.
+		gh.get_comments(function() end)
+		wait_for(function()
+			for _, m in ipairs(notify_msgs()) do
+				if tostring(m):find("Is a gh cli installed?", 1, true) then
+					return true
+				end
+			end
+			return false
+		end, "review-thread fetch failure notification")
+
+		local out = table.concat(notify_msgs(), "\n")
+		assert.truthy(out:find("query=<redacted>", 1, true))
+		assert.is_nil(out:find("LEAKED THREAD BODY", 1, true))
+		assert.is_nil(out:find("reviewThreads", 1, true))
+	end)
+
+	it("a failed review submission redacts the error string handed to its caller", function()
+		gh.repo_info = { owner = "acme", repo = "widget" }
+		gh.pr_number = 42
+		local private_body = "UNPUBLISHED REVIEW SUMMARY"
+		-- submit_review uses `-X POST`, NOT `--method POST` (github.lua:1571-72),
+		-- and formats review_id with %d, so the id must be a number.
+		shim.stub("gh", {
+			{ match = { "api", "/reviews/", "-X", "POST" }, exit = 1, stderr = "422 Unprocessable: " .. private_body },
+		})
+
+		local ok, err
+		gh.submit_review(7, "APPROVE", private_body, function(o, e)
+			ok, err = o, e
+		end)
+		wait_for(function()
+			return ok ~= nil
+		end, "submit_review cb")
+
+		assert.is_false(ok)
+		-- review.lua:47 renders this straight into "Submit failed: <err>".
+		assert.is_nil(err:find(private_body, 1, true))
+		assert.truthy(err:find("<redacted>", 1, true))
 	end)
 
 	it("comment posts a clean Accept header, endpoint, and field pairs", function()

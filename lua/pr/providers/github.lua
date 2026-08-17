@@ -4,6 +4,7 @@
 
 local Job = require("plenary.job")
 local util = require("pr.util")
+local log = require("pr.log")
 local M = {}
 
 M.git_root = ""
@@ -550,11 +551,9 @@ function M.get_comments(callback)
 			Job:new({
 				command = "gh",
 				args = args,
-				on_exit = function(j, return_val)
+				on_exit = vim.schedule_wrap(function(j, return_val)
 					if return_val ~= 0 then
-						vim.notify(table.concat(args, " "))
-						vim.notify(vim.inspect(j:result()))
-						vim.notify("Error running gh api graphql command. Is a gh cli installed?")
+						log.command_failed("GitHub review-thread fetch", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
 						return
 					end
 
@@ -575,7 +574,7 @@ function M.get_comments(callback)
 					M.comments = comments
 					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
 					callback(comments)
-				end,
+				end),
 			}):start()
 		end))
 	end))
@@ -594,11 +593,9 @@ function M.get_git_root(callback)
 	Job:new({
 		command = "git",
 		args = args,
-		on_exit = function(j, return_val)
+		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
-				vim.notify(table.concat(args, " "))
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running git rev-parse command. Is a git cli installed?")
+				log.command_failed("Git root lookup", "git", args, j:stderr_result(), { hint = "Is a git cli installed?", code = return_val })
 				return
 			end
 			local result_json = j:result()
@@ -609,7 +606,7 @@ function M.get_git_root(callback)
 				M.git_root = t
 			end
 			callback(M.git_root)
-		end,
+		end),
 	}):start()
 end
 
@@ -628,15 +625,13 @@ function M.get_git_user(callback)
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
-				vim.notify(table.concat(args, " "))
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running git user command. Is a git cli installed?")
+				log.command_failed("GitHub user lookup", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
 				return
 			end
 			local result_json = j:result()
 			local _, t = next(result_json)
 			if not t then
-				vim.notify("No result from git user command. Is a git cli installed?")
+				vim.notify("No result from gh user command. Is a gh cli installed?")
 			else
 				M.git_user = t
 				vim.notify("Logged in as " .. M.git_user)
@@ -818,15 +813,13 @@ function M.reply(comment_id, body, callback)
 			Job:new({
 				command = "gh",
 				args = args,
-				on_exit = function(j, return_val)
+				on_exit = vim.schedule_wrap(function(j, return_val)
 					if return_val ~= 0 then
-						vim.notify(table.concat(args, " "))
-						vim.notify(vim.inspect(j:result()))
-						vim.notify("Error running gh reply command. Is a gh cli installed?")
+						log.command_failed("GitHub comment reply", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
 					end
 
 					callback(return_val == 0)
-				end,
+				end),
 			}):start()
 		end))
 	end))
@@ -888,15 +881,13 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 				Job:new({
 					command = "gh",
 					args = args,
-					on_exit = function(j, return_val)
+					on_exit = vim.schedule_wrap(function(j, return_val)
 						if return_val ~= 0 then
-							vim.notify(table.concat(args, " "))
-							vim.notify(vim.inspect(j:result()))
-							vim.notify("Error running gh reply command. Is a gh cli installed?")
+							log.command_failed("GitHub inline comment", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
 						end
 
 						callback(return_val == 0)
-					end,
+					end),
 				}):start()
 			end))
 		end))
@@ -935,15 +926,13 @@ function M.edit_comment(comment_id, body, callback)
 		Job:new({
 			command = "gh",
 			args = args,
-			on_exit = function(j, return_val)
+			on_exit = vim.schedule_wrap(function(j, return_val)
 				if return_val ~= 0 then
-					vim.notify(table.concat(args, " "))
-					vim.notify(vim.inspect(j:result()))
-					vim.notify("Error running gh edit comment command. Is a gh cli installed?")
+					log.command_failed("GitHub comment edit", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
 				end
 
 				callback(return_val == 0)
-			end,
+			end),
 		}):start()
 	end))
 end
@@ -1114,15 +1103,13 @@ function M.delete_comment(comment_id, callback)
 		Job:new({
 			command = "gh",
 			args = args,
-			on_exit = function(j, return_val)
+			on_exit = vim.schedule_wrap(function(j, return_val)
 				if return_val ~= 0 then
-					vim.notify(table.concat(args, " "))
-					vim.notify(vim.inspect(j:result()))
-					vim.notify("Error running gh delete comment command. Is a gh cli installed?")
+					log.command_failed("GitHub comment deletion", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
 				end
 
 				callback(return_val == 0)
-			end,
+			end),
 		}):start()
 	end))
 end
@@ -1221,7 +1208,7 @@ function M.checkout_pr(pr_number, callback)
 		end,
 		on_exit = vim.schedule_wrap(function(_, code)
 			if code ~= 0 then
-				local err = table.concat(stderr_lines, "\n")
+				local err = log.redact_text(table.concat(stderr_lines, "\n"))
 				if err == "" then
 					err = "gh pr checkout exited " .. tostring(code)
 				end
@@ -1350,7 +1337,7 @@ function M.update_pr_metadata(fields, callback)
 			on_exit = vim.schedule_wrap(function(_, code)
 				M.pr_metadata = nil -- force refetch on next get
 				if code ~= 0 then
-					local err = table.concat(stderr_lines, "\n")
+					local err = log.redact_text(table.concat(stderr_lines, "\n"), log.payload_secrets(fields))
 					if err == "" then
 						err = "gh pr edit exited " .. tostring(code)
 					end
@@ -1480,7 +1467,7 @@ function M.add_review_comment(review_id, relative_path, start_line, end_line, bo
 				end,
 				on_exit = vim.schedule_wrap(function(_, code)
 					if code ~= 0 then
-						local err = table.concat(stderr_lines, "\n")
+						local err = log.redact_text(table.concat(stderr_lines, "\n"), { body })
 						if err == "" then
 							err = "gh api exited " .. tostring(code)
 						end
@@ -1582,7 +1569,7 @@ function M.submit_review(review_id, event, body, callback)
 				end,
 				on_exit = vim.schedule_wrap(function(_, code)
 					if code ~= 0 then
-						local err = table.concat(stderr_lines, "\n")
+						local err = log.redact_text(table.concat(stderr_lines, "\n"), { body })
 						if err == "" then
 							err = "gh api submit exited " .. tostring(code)
 						end
@@ -1626,7 +1613,7 @@ function M.discard_pending_review(review_id, callback)
 				end,
 				on_exit = vim.schedule_wrap(function(_, code)
 					if code ~= 0 then
-						local err = table.concat(stderr_lines, "\n")
+						local err = log.redact_text(table.concat(stderr_lines, "\n"))
 						if err == "" then
 							err = "gh api delete exited " .. tostring(code)
 						end
