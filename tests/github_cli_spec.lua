@@ -303,7 +303,7 @@ describe("github provider through real CLI plumbing", function()
 		})
 
 		-- get_comments' failure branch returns WITHOUT invoking the callback
-		-- (github.lua:558) -- a fetch-lifecycle bug owned by the next slice of
+		-- (github.lua:557) -- a fetch-lifecycle bug owned by the next slice of
 		-- the spec, not this one. So wait on the notification, not a callback
 		-- that never fires.
 		gh.get_comments(function() end)
@@ -326,7 +326,7 @@ describe("github provider through real CLI plumbing", function()
 		gh.repo_info = { owner = "acme", repo = "widget" }
 		gh.pr_number = 42
 		local private_body = "UNPUBLISHED REVIEW SUMMARY"
-		-- submit_review uses `-X POST`, NOT `--method POST` (github.lua:1571-72),
+		-- submit_review uses `-X POST`, NOT `--method POST` (github.lua:1558-1559),
 		-- and formats review_id with %d, so the id must be a number.
 		shim.stub("gh", {
 			{ match = { "api", "/reviews/", "-X", "POST" }, exit = 1, stderr = "422 Unprocessable: " .. private_body },
@@ -344,6 +344,49 @@ describe("github provider through real CLI plumbing", function()
 		-- review.lua:47 renders this straight into "Submit failed: <err>".
 		assert.is_nil(err:find(private_body, 1, true))
 		assert.truthy(err:find("<redacted>", 1, true))
+	end)
+
+	it("a failed PR metadata update redacts both title and body out of the caller's error", function()
+		gh.pr_number = 42
+		local private_title = "SECRET RELEASE CODENAME"
+		local private_body = "UNPUBLISHED PR DESCRIPTION"
+
+		-- `gh pr edit` echoes the rejected fields back on stderr; pr_info.lua:69
+		-- renders whatever reaches the callback into "Update failed: <err>".
+		-- The echo is deliberately prose, NOT `title=x body=y`: redact_text's
+		-- standing `body=` end-of-line pattern would scrub a `body=` form on its
+		-- own and the assertions below would hold no matter what secrets argument
+		-- the provider passed, making this test vacuous.
+		local function run_failed_edit(fields)
+			shim.stub("gh", {
+				{
+					match = { "pr", "edit" },
+					exit = 1,
+					stderr = "422 Validation Failed: " .. private_title .. " / " .. private_body,
+				},
+			})
+			local ok, err
+			gh.update_pr_metadata(fields, function(o, e)
+				ok, err = o, e
+			end)
+			wait_for(function()
+				return ok ~= nil
+			end, "update_pr_metadata cb")
+			assert.is_false(ok)
+			return err
+		end
+
+		-- Body-only is the discriminating case: a `{ fields.title, fields.body }`
+		-- literal truncates at index 1 under ipairs when title is nil, so the body
+		-- would survive. log.payload_secrets(fields) is key-based and does not.
+		local body_only = run_failed_edit({ body = private_body })
+		assert.is_nil(body_only:find(private_body, 1, true))
+		assert.truthy(body_only:find("<redacted>", 1, true))
+
+		local both = run_failed_edit({ title = private_title, body = private_body })
+		assert.is_nil(both:find(private_title, 1, true))
+		assert.is_nil(both:find(private_body, 1, true))
+		assert.truthy(both:find("<redacted>", 1, true))
 	end)
 
 	it("comment posts a clean Accept header, endpoint, and field pairs", function()

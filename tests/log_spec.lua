@@ -150,6 +150,53 @@ describe("pr.log", function()
 		assert.is_nil(notifications[1].msg:find("private draft", 1, true))
 	end)
 
+	it("command_failed reports a concise cause alongside the hint in normal mode", function()
+		config.opts.debug = false
+		log.command_failed(
+			"GitHub comment reply",
+			"gh",
+			{ "api", "-f", "body=private review" },
+			{ "HTTP 422: Validation Failed (line must be part of the diff)" },
+			{ hint = "Is a gh cli installed?", code = 1 }
+		)
+
+		-- Still exactly one notification, still ERROR -- the cause rides along in
+		-- the same message rather than adding a second one.
+		assert.equals(1, #notifications)
+		assert.equals(vim.log.levels.ERROR, notifications[1].level)
+		assert.equals("GitHub comment reply failed. HTTP 422: Validation Failed (line must be part of the diff) Is a gh cli installed?", notifications[1].msg)
+	end)
+
+	it("command_failed's normal-mode cause is only the first non-blank stderr line", function()
+		config.opts.debug = false
+		log.command_failed("GitHub review-thread fetch", "gh", nil, {
+			"",
+			"   ",
+			"HTTP 403: rate limit exceeded",
+			"see https://docs.github.com/rest for details",
+		}, { hint = "Is a gh cli installed?" })
+
+		assert.equals(1, #notifications)
+		assert.equals("GitHub review-thread fetch failed. HTTP 403: rate limit exceeded Is a gh cli installed?", notifications[1].msg)
+		-- Blank/whitespace lines are skipped, and later lines never join the cause.
+		assert.is_nil(notifications[1].msg:find("docs.github.com", 1, true))
+	end)
+
+	it("command_failed truncates an over-long cause without splitting a multi-byte character", function()
+		config.opts.debug = false
+		-- 158 ASCII bytes, then a 3-byte character straddling the 160-byte cap.
+		local long = string.rep("x", 158) .. "→ tail"
+		log.command_failed("GitHub comment edit", "gh", nil, { long }, { hint = "Is a gh cli installed?" })
+
+		local msg = notifications[1].msg
+		assert.equals(1, #notifications)
+		assert.truthy(msg:find(string.rep("x", 158) .. "…", 1, true))
+		assert.is_nil(msg:find("tail", 1, true))
+		-- The cut backed off the split character rather than emitting half of it.
+		assert.is_nil(msg:find("→", 1, true))
+		assert.truthy(msg:find("Is a gh cli installed?", 1, true))
+	end)
+
 	it("command_failed emits only sanitized argv, exit code, and stderr in debug mode", function()
 		config.opts.debug = true
 		log.command_failed(

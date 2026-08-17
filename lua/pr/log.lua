@@ -21,6 +21,12 @@ local SENSITIVE_VALUE_FLAGS = {
 	["--data-binary"] = true,
 }
 
+-- Normal mode shows one line of cause so a default user learns *why* a command
+-- failed -- an HTTP 422 is not an install problem, and the hint alone would say
+-- otherwise. Capped so a stderr line carrying a wrapped body can never fill the
+-- notification; the full (redacted) stderr is still debug-mode only.
+local MAX_CAUSE_LEN = 160
+
 -- Request-payload keys whose values are user-authored. Everything else in a
 -- payload (paths, ids, line numbers) is structural and must stay readable.
 local PAYLOAD_SECRET_KEYS = {
@@ -90,6 +96,36 @@ local function lines_to_text(value)
 		table.insert(lines, tostring(line))
 	end
 	return table.concat(lines, "\n")
+end
+
+-- The first line of `text` holding a non-space character, trimmed and capped.
+-- CLI errors put the actionable message on the first line and hint/usage noise
+-- below it, so one line is both the most useful cause and the least likely to
+-- spill a wrapped body into the notification.
+---@param text string
+---@return string
+local function first_cause_line(text)
+	for _, line in ipairs(vim.split(text, "\n", { plain = true })) do
+		local trimmed = vim.trim(line)
+		if trimmed ~= "" then
+			if #trimmed <= MAX_CAUSE_LEN then
+				return trimmed
+			end
+			-- Cap is in bytes; back off while the byte *after* the cut is a UTF-8
+			-- continuation byte (0x80-0xBF) so a multi-byte character is never
+			-- split in half.
+			local cut = MAX_CAUSE_LEN
+			while cut > 0 do
+				local next_byte = trimmed:byte(cut + 1)
+				if not next_byte or next_byte < 0x80 or next_byte >= 0xC0 then
+					break
+				end
+				cut = cut - 1
+			end
+			return trimmed:sub(1, cut) .. "…"
+		end
+	end
+	return ""
 end
 
 --- Collect the user-authored strings out of a request payload table so they can
@@ -178,7 +214,16 @@ end
 ---@param opts { hint: string?, secrets: string[]?, code: integer? }|nil
 function M.command_failed(operation, command, args, stderr, opts)
 	opts = opts or {}
+	-- Redacted once, before the debug gate: the one-line cause shown in normal
+	-- mode and the full stderr shown in debug mode are the same sanitized text.
+	local secrets = collect_secrets(args, opts.secrets)
+	local safe_stderr = M.redact_text(stderr, secrets)
+
 	local message = operation .. " failed."
+	local cause = first_cause_line(safe_stderr)
+	if cause ~= "" then
+		message = message .. " " .. cause
+	end
 	if opts.hint and opts.hint ~= "" then
 		message = message .. " " .. opts.hint
 	end
@@ -187,7 +232,6 @@ function M.command_failed(operation, command, args, stderr, opts)
 		return
 	end
 
-	local secrets = collect_secrets(args, opts.secrets)
 	local detail = command
 	if opts.code ~= nil then
 		detail = detail .. " (exit " .. tostring(opts.code) .. ")"
@@ -196,7 +240,6 @@ function M.command_failed(operation, command, args, stderr, opts)
 		detail = detail .. " " .. table.concat(M.redact_argv(args, secrets), " ")
 	end
 	vim.notify(detail, vim.log.levels.INFO)
-	local safe_stderr = M.redact_text(stderr, secrets)
 	if safe_stderr:match("%S") then
 		vim.notify(safe_stderr, vim.log.levels.INFO)
 	end
