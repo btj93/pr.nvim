@@ -360,6 +360,14 @@ describe("bitbucket provider through real CLI plumbing", function()
 		local rendered = table.concat(notify_msgs(), "\n")
 		assert.truthy(rendered:find("Bitbucket auth failed", 1, true))
 		assert.truthy(rendered:find("<redacted>", 1, true))
+		-- Positive argv coverage: the debug dump must still be *present and
+		-- useful* (the endpoint survives), with only the credential replaced.
+		-- Without these two, deleting the argv dump entirely would still satisfy
+		-- the `<redacted>` assertion above (the normal-mode cause line carries
+		-- one), so the redaction of `-u user:app-password` would go unpinned --
+		-- and bitbucket is the only provider that puts a credential on argv.
+		assert.truthy(rendered:find("pullrequests/5/comments", 1, true))
+		assert.truthy(rendered:find("-u <redacted>", 1, true))
 		assert.is_nil(rendered:find("SECURITY_USER", 1, true))
 		assert.is_nil(rendered:find("APP_PASSWORD_SECRET", 1, true))
 		assert.is_nil(rendered:find(private_body, 1, true))

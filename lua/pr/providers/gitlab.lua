@@ -357,12 +357,13 @@ function M.get_git_root(callback)
 		return
 	end
 
+	local args = { "rev-parse", "--show-toplevel" }
 	Job:new({
 		command = "git",
-		args = { "rev-parse", "--show-toplevel" },
+		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				log.command_failed("Git root lookup", "git", { "rev-parse", "--show-toplevel" }, j:stderr_result(), { hint = "Is a git cli installed?", code = code })
+				log.command_failed("Git root lookup", "git", args, j:stderr_result(), { hint = "Is a git cli installed?", code = code })
 				return
 			end
 			local result = j:result()
@@ -386,18 +387,13 @@ function M.get_git_user(callback)
 		return
 	end
 
+	local args = { "api", "/user", "--jq", ".username" }
 	Job:new({
 		command = "glab",
-		args = { "api", "/user", "--jq", ".username" },
+		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				log.command_failed(
-					"GitLab user lookup",
-					"glab",
-					{ "api", "/user", "--jq", ".username" },
-					j:stderr_result(),
-					{ hint = "Is a glab cli installed?", code = code }
-				)
+				log.command_failed("GitLab user lookup", "glab", args, j:stderr_result(), { hint = "Is a glab cli installed?", code = code })
 				return
 			end
 			local result = j:result()

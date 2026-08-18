@@ -293,6 +293,44 @@ describe("gitlab provider through real CLI plumbing", function()
 		assert.is_nil(debugged:find(private_body, 1, true))
 	end)
 
+	it("a failed discussion fetch exposes neither the GraphQL document nor the response body", function()
+		require("pr.config").opts.debug = true
+		-- Seed the front-loaded context (git_user / repo_info / iid) so the chain
+		-- goes straight to the graphql job; the argv it assembles carries the
+		-- whole DISCUSSIONS_QUERY under `-f query=...`.
+		glab.git_user = "testuser"
+		glab.repo_info = { owner = "group", repo = "proj", project_path = "group/proj" }
+		glab.pr_number = 7
+		shim.stub("glab", {
+			{
+				match = { "api", "graphql" },
+				exit = 1,
+				stdout = '{"data":{"project":{"mergeRequest":{"discussions":{"nodes":[{"notes":{"nodes":[{"body":"LEAKED NOTE BODY"}]}}]}}}}}',
+				stderr = "GraphQL: 429 Too Many Requests",
+			},
+		})
+
+		-- get_comments' failure branch returns WITHOUT invoking the callback
+		-- (gitlab.lua:629), mirroring github; so wait on the notification rather
+		-- than a callback that never fires.
+		glab.get_comments(function() end)
+		wait_for(function()
+			for _, m in ipairs(notify_msgs()) do
+				if tostring(m):find("Is a glab cli installed?", 1, true) then
+					return true
+				end
+			end
+			return false
+		end, "discussion fetch failure notification")
+
+		local out = table.concat(notify_msgs(), "\n")
+		assert.truthy(out:find("query=<redacted>", 1, true))
+		assert.is_nil(out:find("LEAKED NOTE BODY", 1, true))
+		-- A distinctive token of the GraphQL document; the operation name
+		-- ("GitLab discussion fetch") deliberately shares no substring with it.
+		assert.is_nil(out:find("mergeRequest", 1, true))
+	end)
+
 	it("run_glab surfaces the install hint on a non-zero exit", function()
 		-- ensure_context resolves the project (real git) + iid (mr view), then
 		-- resolve_thread's PUT exits 1: run_glab reports the install hint.

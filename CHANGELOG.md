@@ -18,12 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Provider failure notifications now include a short redacted cause taken from
-  the command's stderr, so a failure reports what actually went wrong instead of
-  only suggesting the CLI might be missing.
-- `debug` now also enables fuller provider failure diagnostics: the exit code, a
-  redacted argument vector, and the complete redacted stderr. Redaction is
-  applied in both modes.
+- Provider command failures that route through the new shared diagnostic path
+  now include a short redacted cause taken from the command's stderr, so those
+  failures report what actually went wrong instead of only suggesting the CLI
+  might be missing. The covered surface is the payload- and credential-carrying
+  calls: GitHub replies, inline comments, comment edits and deletions and the
+  review-thread GraphQL fetch; the shared GitLab `glab api` wrapper and the
+  discussion GraphQL fetch; the shared Bitbucket `curl` wrapper; plus the
+  git-root and user lookups. Other subprocess-failure branches keep their
+  existing static messages and are unchanged.
+- `debug` now also enables fuller diagnostics on those same call sites: the exit
+  code, a redacted argument vector, and the complete redacted stderr. Redaction
+  is applied in both modes. Failure branches outside that diagnostic path still
+  emit nothing extra under `debug`.
 
 ## [0.1.0] - 2026-07-11
 
