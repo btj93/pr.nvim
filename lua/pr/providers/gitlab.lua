@@ -1,6 +1,7 @@
 local Job = require("plenary.job")
 local util = require("pr.util")
 local local_review = require("pr.review_local")
+local log = require("pr.log")
 local M = {}
 
 M.git_root = ""
@@ -324,9 +325,7 @@ local function run_glab(args, on_done)
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				vim.notify(table.concat(args, " "))
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running glab command. Is a glab cli installed?")
+				log.command_failed("GitLab API command", "glab", args, j:stderr_result(), { hint = "Is a glab cli installed?", code = code })
 			end
 			on_done(code == 0, j)
 		end),
@@ -363,8 +362,7 @@ function M.get_git_root(callback)
 		args = { "rev-parse", "--show-toplevel" },
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running git rev-parse command. Is a git cli installed?")
+				log.command_failed("Git root lookup", "git", { "rev-parse", "--show-toplevel" }, j:stderr_result(), { hint = "Is a git cli installed?", code = code })
 				return
 			end
 			local result = j:result()
@@ -393,8 +391,13 @@ function M.get_git_user(callback)
 		args = { "api", "/user", "--jq", ".username" },
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running glab user command. Is a glab cli installed?")
+				log.command_failed(
+					"GitLab user lookup",
+					"glab",
+					{ "api", "/user", "--jq", ".username" },
+					j:stderr_result(),
+					{ hint = "Is a glab cli installed?", code = code }
+				)
 				return
 			end
 			local result = j:result()
@@ -626,9 +629,7 @@ function M.get_comments(callback)
 					args = args,
 					on_exit = vim.schedule_wrap(function(j, code)
 						if code ~= 0 then
-							vim.notify(table.concat(args, " "))
-							vim.notify(vim.inspect(j:result()))
-							vim.notify("Error running glab api graphql command. Is a glab cli installed?")
+							log.command_failed("GitLab discussion fetch", "glab", args, j:stderr_result(), { hint = "Is a glab cli installed?", code = code })
 							return
 						end
 

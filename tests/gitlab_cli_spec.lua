@@ -13,7 +13,7 @@ local this_file = debug.getinfo(1, "S").source:sub(2)
 local FIXTURES = vim.fn.fnamemodify(this_file, ":p:h") .. "/fixtures/gitlab"
 
 describe("gitlab provider through real CLI plumbing", function()
-	local shim, repo, glab, saved_cwd, saved_notify, notifications
+	local shim, repo, glab, saved_cwd, saved_notify, notifications, saved_debug
 
 	-- Shared route: `glab mr view --json iid` resolves the MR number (iid) for
 	-- every chain that needs it (get_pr_number decodes the JSON `.iid`).
@@ -28,6 +28,8 @@ describe("gitlab provider through real CLI plumbing", function()
 
 	before_each(function()
 		saved_cwd = vim.fn.getcwd()
+		saved_debug = require("pr.config").opts.debug
+		require("pr.config").opts.debug = false
 		notifications = {}
 		saved_notify = vim.notify
 		vim.notify = function(msg, level)
@@ -46,6 +48,7 @@ describe("gitlab provider through real CLI plumbing", function()
 
 	after_each(function()
 		pcall(vim.cmd.cd, saved_cwd)
+		require("pr.config").opts.debug = saved_debug
 		vim.notify = saved_notify
 		pcall(function()
 			shim.uninstall()
@@ -252,6 +255,44 @@ describe("gitlab provider through real CLI plumbing", function()
 		assert_flag_pair(argv, "-f", "body=hello")
 	end)
 
+	it("failed reply diagnostics do not expose the review body or raw argv", function()
+		local private_body = "GITLAB PRIVATE REVIEW BODY"
+
+		local function run_failed_reply()
+			glab.repo_info = { owner = "group", repo = "proj", project_path = "group/proj" }
+			glab.pr_number = 7
+			glab.comments = {
+				["src/foo.lua"] = {
+					{ id = "abc123", comments = { { database_id = 100 } } },
+				},
+			}
+			shim.stub("glab", {
+				{ match = { "api", "--method", "POST" }, exit = 1, stderr = "request rejected: " .. private_body },
+			})
+			local done
+			glab.reply(100, private_body, function(ok)
+				done = ok
+			end)
+			wait_for(function()
+				return done ~= nil
+			end, "failed reply cb")
+			assert.is_false(done)
+			return table.concat(notify_msgs(), "\n")
+		end
+
+		local normal = run_failed_reply()
+		assert.truthy(normal:find("Is a glab cli installed?", 1, true))
+		assert.is_nil(normal:find(private_body, 1, true))
+		assert.is_nil(normal:find("body=", 1, true))
+
+		notifications = {}
+		require("pr.config").opts.debug = true
+		local debugged = run_failed_reply()
+		assert.truthy(debugged:find("Is a glab cli installed?", 1, true))
+		assert.truthy(debugged:find("body=<redacted>", 1, true))
+		assert.is_nil(debugged:find(private_body, 1, true))
+	end)
+
 	it("run_glab surfaces the install hint on a non-zero exit", function()
 		-- ensure_context resolves the project (real git) + iid (mr view), then
 		-- resolve_thread's PUT exits 1: run_glab reports the install hint.
@@ -268,8 +309,9 @@ describe("gitlab provider through real CLI plumbing", function()
 			return done
 		end, "resolve_thread cb")
 
-		-- run_glab's failure branch echoes the args + result, then the literal
-		-- "Error running glab command. Is a glab cli installed?" hint.
+		-- run_glab's failure branch routes through pr.log, which emits one
+		-- sanitized notification carrying the stable "Is a glab cli installed?"
+		-- hint -- never the raw args or the command's result.
 		local found = false
 		for _, m in ipairs(notify_msgs()) do
 			if tostring(m):find("Is a glab cli installed?", 1, true) then
