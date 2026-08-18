@@ -12,6 +12,7 @@
 local Job = require("plenary.job")
 local util = require("pr.util")
 local local_review = require("pr.review_local")
+local log = require("pr.log")
 local M = {}
 
 M.git_root = ""
@@ -89,17 +90,33 @@ local function auth_args()
 	return { "--netrc" }
 end
 
+-- The credential values that must never reach a notification. Kept separate
+-- from auth_args() so that function's single return value stays safe to splat
+-- into vim.list_extend at its other call site (M.get_hunks).
+local function auth_secrets()
+	local user = os.getenv("BITBUCKET_USERNAME")
+	local pass = os.getenv("BITBUCKET_APP_PASSWORD")
+	if user and pass and user ~= "" and pass ~= "" then
+		return { user, pass, user .. ":" .. pass }
+	end
+	return {}
+end
+
 -- Build a curl invocation and dispatch its parsed JSON response (or nil for
 -- empty bodies / errors) to on_done. `body` is a Lua table to be JSON-encoded
 -- as the request payload; pass nil for GET/DELETE.
 local function run_curl(method, path, body, on_done)
 	local args = { "-sS", "-X", method, "-H", "Accept: application/json" }
 	vim.list_extend(args, auth_args())
+	local secrets = auth_secrets()
 	if body then
+		local encoded_body = vim.json.encode(body)
+		vim.list_extend(secrets, log.payload_secrets(body))
+		table.insert(secrets, encoded_body)
 		table.insert(args, "-H")
 		table.insert(args, "Content-Type: application/json")
 		table.insert(args, "-d")
-		table.insert(args, vim.json.encode(body))
+		table.insert(args, encoded_body)
 	end
 	table.insert(args, API_BASE .. path)
 
@@ -108,15 +125,15 @@ local function run_curl(method, path, body, on_done)
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				local stderr = vim.inspect(j:stderr_result() or {})
-				vim.notify("Bitbucket curl failed: " .. table.concat(args, " "))
-				vim.notify(stderr)
+				local stderr = table.concat(j:stderr_result() or {}, "\n")
+				local hint
 				-- Curl is universal but auth misconfiguration is the most common cause.
-				if stderr:find("401") or stderr:find("403") then
-					vim.notify("Bitbucket auth failed. Check BITBUCKET_USERNAME / BITBUCKET_APP_PASSWORD env vars or ~/.netrc entry for api.bitbucket.org.")
+				if stderr:find("401", 1, true) or stderr:find("403", 1, true) then
+					hint = "Bitbucket auth failed. Check BITBUCKET_USERNAME / BITBUCKET_APP_PASSWORD env vars or ~/.netrc entry for api.bitbucket.org."
 				else
-					vim.notify("Is curl installed and api.bitbucket.org reachable?")
+					hint = "Is curl installed and api.bitbucket.org reachable?"
 				end
+				log.command_failed("Bitbucket API request", "curl", args, stderr, { hint = hint, secrets = secrets, code = code })
 				on_done(false, nil)
 				return
 			end
@@ -127,13 +144,17 @@ local function run_curl(method, path, body, on_done)
 			end
 			local ok, data = pcall(vim.json.decode, body_str)
 			if not ok then
-				vim.notify("Bitbucket: failed to parse response: " .. body_str)
+				vim.notify("Bitbucket " .. method .. " " .. path .. " returned invalid JSON", vim.log.levels.ERROR)
 				on_done(false, nil)
 				return
 			end
 			if type(data) == "table" and data.error then
-				local msg = (type(data.error) == "table" and data.error.message) or vim.inspect(data.error)
-				vim.notify("Bitbucket API error: " .. msg)
+				local msg = type(data.error) == "table" and data.error.message or nil
+				if type(msg) == "string" and msg ~= "" then
+					vim.notify("Bitbucket " .. method .. " " .. path .. " failed: " .. log.redact_text(msg, secrets), vim.log.levels.ERROR)
+				else
+					vim.notify("Bitbucket " .. method .. " " .. path .. " returned an error", vim.log.levels.ERROR)
+				end
 				on_done(false, data)
 				return
 			end
@@ -172,8 +193,7 @@ function M.get_git_root(callback)
 		args = { "rev-parse", "--show-toplevel" },
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
-				vim.notify(vim.inspect(j:result()))
-				vim.notify("Error running git rev-parse command. Is a git cli installed?")
+				log.command_failed("Git root lookup", "git", { "rev-parse", "--show-toplevel" }, j:stderr_result(), { hint = "Is a git cli installed?", code = code })
 				return
 			end
 			local result = j:result()

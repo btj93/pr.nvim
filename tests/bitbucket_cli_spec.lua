@@ -32,7 +32,7 @@ local FIXTURES = vim.fn.fnamemodify(this_file, ":p:h") .. "/fixtures/bitbucket"
 
 describe("bitbucket provider through real CLI plumbing", function()
 	local shim, repo, bb, saved_cwd, saved_notify, notifications
-	local saved_user, saved_pass
+	local saved_user, saved_pass, saved_debug
 
 	-- get_pr_number filters open PRs by source branch; the fixture resolves to
 	-- PR id 5. The URL carries the url-encoded `q=source.branch.name="<branch>"`.
@@ -75,6 +75,9 @@ describe("bitbucket provider through real CLI plumbing", function()
 		vim.env.BITBUCKET_USERNAME = nil
 		vim.env.BITBUCKET_APP_PASSWORD = nil
 
+		saved_debug = require("pr.config").opts.debug
+		require("pr.config").opts.debug = false
+
 		package.loaded["pr.providers.bitbucket"] = nil
 		bb = require("pr.providers.bitbucket")
 		repo = git_repo.create({
@@ -92,6 +95,7 @@ describe("bitbucket provider through real CLI plumbing", function()
 		vim.notify = saved_notify
 		vim.env.BITBUCKET_USERNAME = saved_user
 		vim.env.BITBUCKET_APP_PASSWORD = saved_pass
+		require("pr.config").opts.debug = saved_debug
 		pcall(function()
 			shim.uninstall()
 		end)
@@ -328,6 +332,39 @@ describe("bitbucket provider through real CLI plumbing", function()
 		end
 		assert.is_true(found, "expected the Bitbucket auth-failed notification")
 		assert.is_nil(reachability_msg, "generic reachability message must not fire on a 401")
+	end)
+
+	it("run_curl redacts credentials and review text in debug mode while keeping the auth hint", function()
+		require("pr.config").opts.debug = true
+		vim.env.BITBUCKET_USERNAME = "SECURITY_USER"
+		vim.env.BITBUCKET_APP_PASSWORD = "APP_PASSWORD_SECRET"
+		bb.repo_info = { owner = "acme", repo = "widget" }
+		bb.pr_number = 5
+		local private_body = "BITBUCKET UNPUBLISHED REVIEW"
+		shim.stub("curl", {
+			{
+				match = { "-X", "POST" },
+				exit = 22,
+				stderr = "curl: (22) 401 Unauthorized SECURITY_USER:APP_PASSWORD_SECRET " .. private_body,
+			},
+		})
+
+		local done = false
+		bb.reply(100, private_body, function()
+			done = true
+		end)
+		wait_for(function()
+			return done
+		end, "reply cb")
+
+		local rendered = table.concat(notify_msgs(), "\n")
+		assert.truthy(rendered:find("Bitbucket auth failed", 1, true))
+		assert.truthy(rendered:find("<redacted>", 1, true))
+		assert.is_nil(rendered:find("SECURITY_USER", 1, true))
+		assert.is_nil(rendered:find("APP_PASSWORD_SECRET", 1, true))
+		assert.is_nil(rendered:find(private_body, 1, true))
+		assert.is_nil(rendered:find('"content"', 1, true))
+		assert.is_nil(rendered:find("Is curl installed and api.bitbucket.org reachable?", 1, true))
 	end)
 
 	it("checkout_pr fetches + checks out a branch that lives only in the bare origin", function()
