@@ -91,6 +91,12 @@ Bitbucket passes its username and app password as explicit secrets. GitHub and G
 
 The formatter is defensive, not an authentication redesign. Environment credentials still appear in the curl child-process argv; the documentation will recommend `~/.netrc` as the safer Bitbucket option. Moving credentials off argv entirely belongs to the later process-runner/authentication design because it requires secure stdin or temporary-file lifecycle work.
 
+> **ERRATUM (2026-08-18, implementation of `470b186..609cf99`).** This spec contradicts itself about normal-mode output. The "Never trade safety for debug convenience" principle above says normal operation logs "an operation name and a concise cause", while the last redaction-rules bullet in this section says normal mode shows "only the operation and stable install/auth hint" (no cause).
+>
+> **Resolved in favor of the principle: normal mode DOES show a redacted one-line cause.** Implemented in commit `eba6037` — `log.command_failed` renders `<operation> failed. <first non-blank redacted stderr line, capped at 160 bytes> <hint>` in both modes; `debug` adds the exit code, redacted argv, and full redacted stderr on top. Rationale: the hint alone ("Is a gh cli installed?") actively misleads on an HTTP 422/401, and the cause line goes through the same redaction as the debug output, so it leaks nothing the debug path would not.
+>
+> The bullet above is therefore stale — do NOT "fix" the cause line back out in a later slice. Coverage: `tests/log_spec.lua` plus the normal-mode assertions in `tests/{github,gitlab,bitbucket}_cli_spec.lua`.
+
 ### 2. Fetch lifecycle state
 
 Add `lua/pr/fetch_state.lua`, an internal state coordinator for provider read resources. Each provider owns one coordinator and continues to store normalized values in its existing module fields.
