@@ -63,6 +63,7 @@ Two strategy points are resolved by string lookup:
 | `highlights.lua` | All `nvim_set_hl` definitions, re-applied on `ColorScheme` |
 | `health.lua` | `:checkhealth pr` |
 | `config.lua` | Default `M.opts` + `setup()` merge |
+| `log.lua` | Redaction helpers (`redact_text`, `redact_argv`, `payload_secrets`) + `command_failed`, the only path that prints subprocess diagnostic detail; argv/stderr detail is gated on `config.opts.debug` |
 | `util.lua` | Cross-cutting helpers (`open_pr_file`, `is_valid_win/buf`) |
 
 ### Two parallel feature modules: `comment` and `hunk`
@@ -259,6 +260,7 @@ All three pickers (`pickers/{snacks,telescope,fzf}.lua`) share a **uniform pure 
 - LuaCATS annotations (`---@param`, `---@class`, `---@field`) are used throughout for the public API and provider data shapes; keep them in sync when adding fields.
 - User-visible messages go through `vim.notify` for transient info and `vim.api.nvim_echo({{msg, "ErrorMsg"|"WarningMsg"}}, true, {})` for errors/warnings. Match the surrounding style of the function you're editing.
 - Errors from `gh`/`git` subprocesses are reported with the literal hint "Is a gh cli installed?" / "Is a git cli installed?" — keep this phrasing if you add similar error paths so users get a consistent signal.
+- Provider subprocess failure branches must route through `log.command_failed` (or `log.redact_text` for an error string handed back to a caller). Never `vim.notify` raw argv, `j:result()`, or `j:stderr_result()` — argv carries `body=`/`query=` payloads and Bitbucket's `-u user:app-password`, and stdout is the full API response. `tests/log_spec.lua` pins the redaction contract; the audit greps in the release-stabilization plan catch the common regressions.
 - `M.actions` entries use `menu_text` / `menu_desc` / `popup_hint` / `show_hint` (NOT `menu` / `hint`). Spec docs that say otherwise are stale.
 
 ## Things to know before changing behavior

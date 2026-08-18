@@ -95,7 +95,13 @@ picker            Picker backend: "snacks" (default), "telescope", "fzf".
 sign              Signcolumn glyph placed on a commented line. Default "󰅺".
 multi_line_sign   Glyphs drawn down the gutter for a multi-line thread:
                   start_line "┌", connector "│", end_line "└".
-debug             Extra debug logging. Default false.
+debug             Extra debug logging. Default false. A failed provider
+                  command always reports the operation, a redacted one-line
+                  cause taken from stderr, and a remediation hint. When true,
+                  it additionally reports the exit code, a redacted argument
+                  vector, and the full redacted stderr. Credentials, request
+                  payloads, GraphQL documents, and response bodies are
+                  redacted in both modes.
 run_on_start      Which features attach at setup() time.
                   comments = true, hunks = false (defaults).
 show_outdated_inline

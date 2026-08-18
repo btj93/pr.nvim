@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+
+- Provider subprocess failures no longer print raw command arguments, request
+  payloads, GraphQL documents, or response bodies. This prevents Bitbucket
+  environment credentials and unpublished review text from appearing in
+  `:messages`. Error text handed back to callers is redacted at the provider
+  boundary, so the `:PRReview` submit and `:PRInfo` edit failure messages are
+  covered too.
+
+### Changed
+
+- Provider failure notifications now include a short redacted cause taken from
+  the command's stderr, so a failure reports what actually went wrong instead of
+  only suggesting the CLI might be missing.
+- `debug` now also enables fuller provider failure diagnostics: the exit code, a
+  redacted argument vector, and the complete redacted stderr. Redaction is
+  applied in both modes.
 
 ## [0.1.0] - 2026-07-11
 
