@@ -13,6 +13,7 @@ local Job = require("plenary.job")
 local util = require("pr.util")
 local local_review = require("pr.review_local")
 local log = require("pr.log")
+local fetch_state = require("pr.fetch_state")
 local M = {}
 
 M.git_root = ""
@@ -28,6 +29,11 @@ M.pending_review_id = nil
 M.comments = {}
 ---@type Hunks
 M.hunks = {}
+
+--- Lifecycle coordinator for this provider's read resources.
+---@type pr.FetchState
+M._fetch = fetch_state.new()
+
 ---@type table<string, PRSummary[]>
 M.pr_list = {}
 ---@type PRMetadata?
@@ -120,7 +126,7 @@ local function run_curl(method, path, body, on_done)
 	end
 	table.insert(args, API_BASE .. path)
 
-	Job:new({
+	util.start_job("Bitbucket API request", {
 		command = "curl",
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
@@ -160,11 +166,13 @@ local function run_curl(method, path, body, on_done)
 			end
 			on_done(true, data)
 		end),
-	}):start()
+	}, function()
+		on_done(false, nil)
+	end)
 end
 
 local function get_current_branch(callback)
-	Job:new({
+	util.start_job("Git branch lookup", {
 		command = "git",
 		args = { "rev-parse", "--abbrev-ref", "HEAD" },
 		on_exit = vim.schedule_wrap(function(j, code)
@@ -176,7 +184,9 @@ local function get_current_branch(callback)
 			local _, t = next(result)
 			callback(t)
 		end),
-	}):start()
+	}, function()
+		callback(nil)
+	end)
 end
 
 ---
@@ -239,30 +249,39 @@ function M.get_repo_info(callback)
 		return
 	end
 
-	Job:new({
+	-- Every failure branch here settles its caller. get_comments and get_hunks
+	-- front-load this getter, so a branch that returned without a callback left
+	-- the fetch coordinator at "loading" and joined every later caller onto a
+	-- waiter list nothing would ever drain.
+	util.start_job("Git remote lookup", {
 		command = "git",
 		args = { "remote", "get-url", "origin" },
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
 				vim.api.nvim_echo({ { "Could not determine Bitbucket project from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			local result = j:result()
 			local _, t = next(result)
 			if not t then
 				vim.api.nvim_echo({ { "Could not determine Bitbucket project from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			local url = trim(t)
 			local workspace, repo_slug = M._parse_remote_url(url)
 			if not workspace or not repo_slug then
 				vim.api.nvim_echo({ { "Could not parse workspace/repo from remote URL.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			M.repo_info = { owner = workspace, repo = repo_slug }
 			callback(workspace, repo_slug)
 		end),
-	}):start()
+	}, function()
+		callback(nil, nil)
+	end)
 end
 
 ---
@@ -276,11 +295,15 @@ function M.get_pr_number(callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(workspace, repo)
 		if not workspace or not repo then
+			-- get_repo_info already reported why; settling silently here keeps that
+			-- message single while still releasing this getter's caller.
+			callback(nil)
 			return
 		end
 		get_current_branch(function(branch)
 			if not branch then
 				vim.notify("Could not determine current branch.")
+				callback(nil)
 				return
 			end
 			-- Bitbucket's query DSL: filter by source branch + open state.
@@ -289,6 +312,7 @@ function M.get_pr_number(callback)
 			run_curl("GET", path, nil, function(ok, data)
 				if not ok or not data or not data.values or #data.values == 0 then
 					vim.notify("No PR open for this branch")
+					callback(nil)
 					return
 				end
 				local pr = data.values[1]
@@ -487,27 +511,36 @@ end
 ---
 ---@param callback? fun(comments: Comments)
 function M.get_comments(callback)
-	callback = callback or function(_) end
-	if next(M.comments) then
+	callback = callback or function(_, _) end
+
+	local action, token = M._fetch:begin("comments", callback)
+	if action == "loaded" then
 		callback(M.comments)
+		return
+	end
+	if action == "joined" then
 		return
 	end
 
 	M.get_git_user(vim.schedule_wrap(function(_)
 		M.get_repo_info(vim.schedule_wrap(function(workspace, repo)
 			if not workspace or not repo then
+				M._fetch:reject("comments", token, {}, "no repo info")
 				return
 			end
 			M.get_pr_number(vim.schedule_wrap(function(pr_number)
 				if not pr_number then
+					M._fetch:reject("comments", token, {}, "no PR number")
 					return
 				end
 				-- Fetch hunks first so we can populate the path-set used by the
-				-- outdated heuristic. M.get_hunks may legitimately return early
-				-- (network error, auth failure, etc.) — in that case the callback
-				-- fires with no hunks captured, and we fall through with
-				-- current_paths_arg = nil so normalization defaults is_outdated
-				-- = false rather than refusing to show comments at all.
+				-- outdated heuristic. This is the one place where a single call
+				-- drives two coordinator resources: the inner call owns and settles
+				-- "hunks" on its own token, and every exit below still has to settle
+				-- "comments" on this closure's token. A failed hunks fetch settles
+				-- with an empty table, so current_paths_arg falls back to nil and
+				-- normalization defaults is_outdated = false rather than refusing to
+				-- show comments at all.
 				M.get_hunks(vim.schedule_wrap(function(hunks)
 					local current_paths = {}
 					for p, _ in pairs(hunks or {}) do
@@ -517,15 +550,20 @@ function M.get_comments(callback)
 					local path = "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. pr_number .. "/comments?pagelen=100"
 					run_curl("GET", path, nil, function(ok, data)
 						if not ok then
+							M._fetch:reject("comments", token, {}, "comments request failed")
 							return
 						end
 						local comments, thread_count, unsolved_count = M._normalize_comments(data, M.git_user, current_paths_arg)
 						if not comments then
+							M._fetch:reject("comments", token, {}, "unexpected comments response")
+							return
+						end
+						if not M._fetch:owns("comments", token) then
 							return
 						end
 						M.comments = comments
 						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-						callback(comments)
+						M._fetch:resolve("comments", token, comments)
 					end)
 				end))
 			end))
@@ -536,18 +574,25 @@ end
 ---
 ---@param callback? fun(hunks: Hunks)
 function M.get_hunks(callback)
-	callback = callback or function(_) end
-	if next(M.hunks) then
+	callback = callback or function(_, _) end
+
+	local action, token = M._fetch:begin("hunks", callback)
+	if action == "loaded" then
 		callback(M.hunks)
+		return
+	end
+	if action == "joined" then
 		return
 	end
 
 	M.get_repo_info(vim.schedule_wrap(function(workspace, repo)
 		if not workspace or not repo then
+			M._fetch:reject("hunks", token, {}, "no repo info")
 			return
 		end
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
 			if not pr_number then
+				M._fetch:reject("hunks", token, {}, "no PR number")
 				return
 			end
 			-- The /diff endpoint returns plain unified diff text rather than JSON.
@@ -555,22 +600,27 @@ function M.get_hunks(callback)
 			vim.list_extend(args, auth_args())
 			table.insert(args, API_BASE .. "/repositories/" .. workspace .. "/" .. repo .. "/pullrequests/" .. pr_number .. "/diff")
 
-			Job:new({
+			util.start_job("Bitbucket PR diff", {
 				command = "curl",
 				args = args,
 				on_exit = vim.schedule_wrap(function(j, code)
 					if code ~= 0 then
 						vim.notify("Error running curl for pull request diff.")
+						M._fetch:reject("hunks", token, {}, "pull request diff request failed")
 						return
 					end
-					local diff_lines = j:result()
-					if not diff_lines or #diff_lines == 0 then
+					-- An exit-0 /diff with no body is a PR whose diff is empty, not a
+					-- failure, so it settles as a cached empty result.
+					local diff_lines = j:result() or {}
+					if not M._fetch:owns("hunks", token) then
 						return
 					end
 					M.hunks = util.parse_diff_hunks(diff_lines)
-					callback(M.hunks)
+					M._fetch:resolve("hunks", token, M.hunks)
 				end),
-			}):start()
+			}, function()
+				M._fetch:reject("hunks", token, {}, "pull request diff spawn failed")
+			end)
 		end))
 	end))
 end
@@ -1083,14 +1133,20 @@ function M.clear()
 	M.pending_review_id = nil
 	M.collaborators = nil
 	M.issues = nil
+	-- The cache fields are reset inline above rather than through the
+	-- fine-grained clears, so the coordinator has to be returned to cold here or
+	-- a "loaded" resource would replay the emptied cache forever.
+	M._fetch:invalidate_all({}, "provider cleared")
 end
 
 function M.clear_comments()
 	M.comments = {}
+	M._fetch:invalidate("comments", {}, "comments cleared")
 end
 
 function M.clear_hunks()
 	M.hunks = {}
+	M._fetch:invalidate("hunks", {}, "hunks cleared")
 end
 
 function M.clear_pr_number()

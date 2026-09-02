@@ -569,4 +569,391 @@ describe("bitbucket provider through real CLI plumbing", function()
 
 		assert.equals(2, #prs)
 	end)
+
+	-- Lifecycle: bitbucket's read getters short-circuited on `next(M.comments)` /
+	-- `next(M.hunks)`, so a PR with no comments and a PR with an empty diff both
+	-- refetched on every call, concurrent callers each started their own curl
+	-- chain, and a failed fetch never settled its caller at all.
+	local DIFF_ROUTE = { match = { "/diff" }, stdout_file = FIXTURES .. "/diff.txt" }
+	local COMMENTS_ROUTE = { match = { "comments?pagelen=100" }, stdout_file = FIXTURES .. "/comments.json" }
+	local EMPTY_COMMENTS = { match = { "comments?pagelen=100" }, stdout = '{"values":[]}' }
+	local PR_QUERY_FAILS = { match = { "pullrequests?state=OPEN&pagelen=5" }, exit = 1, stderr = "curl: (22) 404" }
+
+	it("caches an empty comments result instead of refetching", function()
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, EMPTY_COMMENTS })
+
+		local first, second
+		bb.get_comments(function(c)
+			first = c
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_comments")
+		bb.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "second get_comments")
+
+		assert.same({}, first)
+		assert.same({}, second)
+		-- Cached: a PR with no comments used to fail `next(M.comments)` and
+		-- re-issue the whole chain on every call.
+		assert.equals(1, curl_count("comments?pagelen=100"))
+
+		-- ...and invalidation makes the NEXT call fetch again.
+		bb.clear_comments()
+		local third
+		bb.get_comments(function(c)
+			third = c
+		end)
+		wait_for(function()
+			return third ~= nil
+		end, "get_comments after clear_comments")
+		assert.same({}, third)
+		assert.equals(2, curl_count("comments?pagelen=100"))
+	end)
+
+	it("caches an empty hunks result and refetches after invalidation", function()
+		-- An exit-0 /diff with no body is a PR whose diff is empty, not a failure.
+		shim.stub("curl", { PR_NUMBER_QUERY, { match = { "/diff" }, stdout = "" } })
+
+		local first, second
+		bb.get_hunks(function(h)
+			first = h
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_hunks")
+		bb.get_hunks(function(h)
+			second = h
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "second get_hunks")
+
+		assert.same({}, first)
+		assert.same({}, second)
+		assert.equals(1, curl_count("/diff"))
+
+		bb.clear_hunks()
+		local third
+		bb.get_hunks(function(h)
+			third = h
+		end)
+		wait_for(function()
+			return third ~= nil
+		end, "get_hunks after clear_hunks")
+		assert.same({}, third)
+		assert.equals(2, curl_count("/diff"))
+	end)
+
+	it("coalesces two callers arriving before the fetch completes", function()
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, COMMENTS_ROUTE })
+
+		local a, b
+		bb.get_comments(function(c)
+			a = c
+		end)
+		bb.get_comments(function(c)
+			b = c
+		end)
+		wait_for(function()
+			return a ~= nil and b ~= nil
+		end, "both callers settled")
+
+		assert.is_not_nil(a["src/foo.lua"])
+		assert.is_not_nil(b["src/foo.lua"])
+		-- One chain, not two: the second caller joined the first fetch.
+		assert.equals(1, curl_count("comments?pagelen=100"))
+	end)
+
+	it("settles the caller with an error instead of hanging when the fetch fails", function()
+		shim.stub("curl", {
+			API_USER,
+			PR_NUMBER_QUERY,
+			DIFF_ROUTE,
+			{ match = { "comments?pagelen=100" }, exit = 22, stderr = "curl: (22) The requested URL returned error: 429" },
+		})
+
+		local value, err, called = nil, nil, false
+		bb.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "failed get_comments settles its caller")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		-- The failure must NOT be cached as a successful empty result.
+		assert.same({}, bb.comments)
+		assert.equals("error", bb._fetch:status("comments"))
+	end)
+
+	it("clear() returns the fetch coordinator to cold so the next get_comments refetches", function()
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, EMPTY_COMMENTS })
+
+		local first
+		bb.get_comments(function(c)
+			first = c
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_comments")
+
+		-- clear() resets the cache fields inline rather than delegating to
+		-- clear_comments/clear_hunks, so it has to invalidate the coordinator
+		-- itself or the emptied cache stays "loaded" forever.
+		bb.clear()
+
+		local second
+		bb.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "get_comments after clear()")
+		assert.equals(2, curl_count("comments?pagelen=100"))
+	end)
+
+	-- Each reject and owns site gets its own pin. A failing PR lookup and a
+	-- missing origin remote are the two ways the prelude getters fail; before
+	-- they settled their own callbacks the resource stayed "loading" forever and
+	-- every later caller joined a waiter list nothing would drain.
+	it("get_comments settles and stays retryable when the PR lookup fails", function()
+		shim.stub("curl", { API_USER, PR_QUERY_FAILS, DIFF_ROUTE, COMMENTS_ROUTE })
+
+		local value, err, called
+		bb.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on a failed PR lookup")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", bb._fetch:status("comments"))
+		assert.equals(0, curl_count("comments?pagelen=100"))
+
+		-- Retryable, not wedged: once the PR resolves, the next caller fetches.
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, EMPTY_COMMENTS })
+		local second
+		bb.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "get_comments after the failure")
+		assert.same({}, second)
+		assert.equals(1, curl_count("comments?pagelen=100"))
+	end)
+
+	it("get_comments settles when the origin remote is gone", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, COMMENTS_ROUTE })
+
+		local value, err, called
+		bb.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles without repo info")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, curl_count("comments?pagelen=100"))
+	end)
+
+	it("get_comments settles on an unexpected comments response", function()
+		shim.stub("curl", {
+			API_USER,
+			PR_NUMBER_QUERY,
+			DIFF_ROUTE,
+			{ match = { "comments?pagelen=100" }, stdout = '{"type":"error"}' },
+		})
+
+		local value, err, called
+		bb.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on an unexpected response")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", bb._fetch:status("comments"))
+	end)
+
+	it("get_hunks settles with an error when the diff request fails", function()
+		shim.stub("curl", { PR_NUMBER_QUERY, { match = { "/diff" }, exit = 22, stderr = "curl: (22) 500" } })
+
+		local value, err, called
+		bb.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "failed get_hunks settles its caller")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.same({}, bb.hunks)
+		assert.equals("error", bb._fetch:status("hunks"))
+
+		-- A failure is not cached as success: the next caller re-runs the diff GET
+		-- instead of replaying an empty result.
+		shim.stub("curl", { PR_NUMBER_QUERY, DIFF_ROUTE })
+		local second
+		bb.get_hunks(function(h)
+			second = h
+		end)
+		wait_for(function()
+			return second ~= nil and next(second) ~= nil
+		end, "get_hunks after the failure")
+		assert.equals(2, curl_count("/diff"))
+	end)
+
+	it("get_hunks settles when the PR lookup fails", function()
+		shim.stub("curl", { PR_QUERY_FAILS, DIFF_ROUTE })
+
+		local value, err, called
+		bb.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_hunks settles on a failed PR lookup")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, curl_count("/diff"))
+	end)
+
+	it("get_hunks settles when the origin remote is gone", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("curl", { PR_NUMBER_QUERY, DIFF_ROUTE })
+
+		local value, err, called
+		bb.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_hunks settles without repo info")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, curl_count("/diff"))
+	end)
+
+	it("a comments fetch invalidated mid-flight never publishes into the cache", function()
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, COMMENTS_ROUTE })
+
+		local err, called
+		bb.get_comments(function(_, e)
+			err, called = e, true
+		end)
+		-- The chain is still on its first curl here, so this retires the token the
+		-- in-flight completion is holding.
+		bb.clear_comments()
+		assert.is_true(called, "invalidate settles the waiting caller")
+		assert.is_not_nil(err)
+
+		wait_for(function()
+			return curl_count("comments?pagelen=100") == 1
+		end, "the retired fetch still ran to completion")
+		vim.wait(500, function()
+			return false
+		end)
+
+		-- The completion lost its token, so the fixture's threads must not have
+		-- landed in a just-emptied cache.
+		assert.same({}, bb.comments)
+		assert.equals("cold", bb._fetch:status("comments"))
+	end)
+
+	it("a hunks fetch invalidated mid-flight never publishes into the cache", function()
+		shim.stub("curl", { PR_NUMBER_QUERY, DIFF_ROUTE })
+
+		local err, called
+		bb.get_hunks(function(_, e)
+			err, called = e, true
+		end)
+		bb.clear_hunks()
+		assert.is_true(called, "invalidate settles the waiting caller")
+		assert.is_not_nil(err)
+
+		wait_for(function()
+			return curl_count("/diff") == 1
+		end, "the retired fetch still ran to completion")
+		vim.wait(500, function()
+			return false
+		end)
+
+		assert.same({}, bb.hunks)
+		assert.equals("cold", bb._fetch:status("hunks"))
+	end)
+
+	-- Point PATH at a directory holding nothing but `git`, so `curl` is genuinely
+	-- absent and plenary's `Job:new` executable check fires. git is still never
+	-- shimmed: the entry is a symlink to the real binary.
+	local function hide_curl()
+		local dir = vim.fn.tempname()
+		vim.fn.mkdir(dir, "p")
+		local git_exe = vim.fn.exepath("git")
+		assert(git_exe ~= "", "git must be on PATH for this spec")
+		local uv = vim.uv or vim.loop
+		uv.fs_symlink(git_exe, dir .. "/git")
+		local saved = vim.env.PATH
+		vim.env.PATH = dir
+		return function()
+			vim.env.PATH = saved
+			vim.fn.delete(dir, "rf")
+		end
+	end
+
+	-- A raising `Job:new` inside a fetch_state-owned chain used to settle
+	-- nothing, so the resource stayed "loading" forever and every later caller
+	-- joined a waiter list that never drained. Drive one such chain with curl
+	-- absent: the caller must be settled, the raise must not escape the entry
+	-- call, and the resource must be retryable rather than joined.
+	local function assert_missing_cli_settles(resource, start_fetch)
+		local restore = hide_curl()
+		local settled, err_seen = 0, nil
+		local function run()
+			start_fetch(function(_, err)
+				settled = settled + 1
+				err_seen = err
+			end)
+			wait_for(function()
+				return settled > 0
+			end, resource .. " settles with curl missing")
+		end
+		local pcall_ok, pcall_err = pcall(run)
+		restore()
+		assert(pcall_ok, pcall_err)
+
+		assert.equals(1, settled)
+		assert.is_not_nil(err_seen)
+		assert.equals("error", bb._fetch:status(resource))
+		assert.equals("start", (bb._fetch:begin(resource, nil)))
+
+		local named = vim.tbl_filter(function(msg)
+			return tostring(msg):find("curl: Executable not found", 1, true) ~= nil
+		end, notify_msgs())
+		assert(#named > 0, "expected a notification naming the missing CLI, got: " .. vim.inspect(notify_msgs()))
+	end
+
+	it("get_comments settles and stays retryable when curl is not installed", function()
+		assert_missing_cli_settles("comments", bb.get_comments)
+	end)
+
+	it("get_hunks settles and stays retryable when curl is not installed", function()
+		assert_missing_cli_settles("hunks", bb.get_hunks)
+	end)
 end)
