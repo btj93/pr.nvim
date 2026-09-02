@@ -64,7 +64,7 @@ Two strategy points are resolved by string lookup:
 | `health.lua` | `:checkhealth pr` |
 | `config.lua` | Default `M.opts` + `setup()` merge |
 | `log.lua` | Redaction helpers (`redact_text`, `redact_argv`, `payload_secrets`) + `command_failed`, the only path that prints subprocess diagnostic detail; argv/stderr detail is gated on `config.opts.debug` |
-| `util.lua` | Cross-cutting helpers (`open_pr_file`, `is_valid_win/buf`) |
+| `util.lua` | Cross-cutting helpers (`open_pr_file`, `is_valid_win/buf`) + `start_job`, the shared `Job:new` spawn guard every provider routes its subprocess launches through |
 
 ### Two parallel feature modules: `comment` and `hunk`
 

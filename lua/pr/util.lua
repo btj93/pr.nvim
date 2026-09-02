@@ -1,6 +1,30 @@
 local Job = require("plenary.job")
+local log = require("pr.log")
 
 local M = {}
+
+-- `Job:new` validates `command` against `vim.fn.executable` and raises when the
+-- CLI is missing (plenary/job.lua:108), at construction rather than in
+-- `:start()`, and before any `on_exit` can run. Left unhandled inside a
+-- `fetch_state`-owned chain that raise settles nothing, so the resource stays
+-- "loading" and every later caller joins a waiter list that never drains.
+-- The `pcall` must therefore wrap the construction, not just the `:start()`.
+---@param operation string
+---@param spec table `Job:new` options (`command`, `args`, `on_exit`, ...)
+---@param on_spawn_error fun() Settles the caller the way a failed command does.
+function M.start_job(operation, spec, on_spawn_error)
+	local ok, err = pcall(function()
+		Job:new(spec):start()
+	end)
+	if ok then
+		return
+	end
+	-- Strip Lua's "<chunk>:<line>: " prefix so the reported cause is the raise's
+	-- own message ("gh: Executable not found"), not a plenary source path.
+	local cause = tostring(err):match("^.-:%d+: (.*)$") or tostring(err)
+	log.command_failed(operation, spec.command, spec.args, cause, { hint = "Is a " .. spec.command .. " cli installed?" })
+	on_spawn_error()
+end
 
 ---
 ---@param win integer

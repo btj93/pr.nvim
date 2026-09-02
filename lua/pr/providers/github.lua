@@ -320,28 +320,6 @@ function M._normalize_issues(raw)
 	return out
 end
 
--- `Job:new` validates `command` against `vim.fn.executable` and raises when the
--- CLI is missing (plenary/job.lua:108), at construction rather than in
--- `:start()`, and before any `on_exit` can run. Left unhandled inside a
--- `fetch_state`-owned chain that raise settles nothing, so the resource stays
--- "loading" and every later caller joins a waiter list that never drains.
----@param operation string
----@param spec table `Job:new` options (`command`, `args`, `on_exit`, ...)
----@param on_spawn_error fun() Settles the caller the way a failed command does.
-local function start_job(operation, spec, on_spawn_error)
-	local ok, err = pcall(function()
-		Job:new(spec):start()
-	end)
-	if ok then
-		return
-	end
-	-- Strip Lua's "<chunk>:<line>: " prefix so the reported cause is the raise's
-	-- own message ("gh: Executable not found"), not a plenary source path.
-	local cause = tostring(err):match("^.-:%d+: (.*)$") or tostring(err)
-	log.command_failed(operation, spec.command, spec.args, cause, { hint = "Is a " .. spec.command .. " cli installed?" })
-	on_spawn_error()
-end
-
 ---
 ---@param callback? fun(owner: string, repo: string)
 ---@return nil
@@ -353,7 +331,7 @@ function M.get_repo_info(callback)
 	end
 
 	local args = { "remote", "get-url", "origin" }
-	start_job("Git remote lookup", {
+	util.start_job("Git remote lookup", {
 		command = "git",
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
@@ -400,7 +378,7 @@ function M.get_pr_number(callback)
 	end
 
 	local args = { "pr", "view", "--json", "number", "--jq", ".number" }
-	start_job("GitHub PR-number lookup", {
+	util.start_job("GitHub PR-number lookup", {
 		command = "gh",
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
@@ -590,7 +568,7 @@ function M.get_comments(callback)
 				"-f",
 				"query=" .. query_template,
 			}
-			start_job("GitHub review-thread fetch", {
+			util.start_job("GitHub review-thread fetch", {
 				command = "gh",
 				args = args,
 				on_exit = vim.schedule_wrap(function(j, return_val)
@@ -670,7 +648,7 @@ function M.get_git_user(callback)
 	end
 
 	local args = { "api", "user", "-q", ".login" }
-	start_job("GitHub user lookup", {
+	util.start_job("GitHub user lookup", {
 		command = "gh",
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
@@ -720,7 +698,7 @@ function M.get_hunks(callback)
 				return
 			end
 
-			start_job("GitHub PR diff", {
+			util.start_job("GitHub PR diff", {
 				command = "gh",
 				args = {
 					"pr",
