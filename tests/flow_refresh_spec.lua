@@ -338,4 +338,39 @@ describe("flow: pr.refresh() pipeline", function()
 		pr.refresh()
 		assert.equals(2, count_calls(fake, "get_comments"), "refresh resumes after in-flight completes")
 	end)
+
+	it("a rejected refetch reports no change summary and still releases the guard", function()
+		fake.scenario.comments = { ["foo.lua"] = { mk_thread("T1", 1) } }
+		fake.comments = fake.scenario.comments
+		comment.enabled = true
+
+		-- The coordinator settles a failed fetch with (empty fallback, err) over a
+		-- cache clear_comments has already emptied, so a diff against the snapshot
+		-- would call every live thread deleted.
+		local real_get_comments = fake.get_comments
+		fake.get_comments = function(cb)
+			table.insert(fake.calls, { method = "get_comments", args = {} })
+			cb({}, "review-thread fetch failed")
+		end
+
+		local function deletion_notified()
+			for _, n in ipairs(notifications) do
+				if type(n.msg) == "string" and n.msg:find("deleted thread", 1, true) then
+					return true
+				end
+			end
+			return false
+		end
+
+		comment.refresh()
+		vim.wait(300, function()
+			return deletion_notified()
+		end)
+		assert.is_false(deletion_notified(), "a failed refetch must not report deleted threads")
+
+		-- The same reject still clears refresh_in_progress, so the next refresh runs.
+		fake.get_comments = real_get_comments
+		comment.refresh()
+		assert.equals(2, count_calls(fake, "get_comments"), "refresh resumes after a rejected fetch")
+	end)
 end)

@@ -22,6 +22,7 @@ M.comments = {}
 M.hunks = {}
 
 --- Lifecycle coordinator for this provider's read resources.
+---@type pr.FetchState
 M._fetch = fetch_state.new()
 
 ---@type table<string, PRSummary[]>
@@ -335,12 +336,14 @@ function M.get_repo_info(callback)
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
 				vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			local result_json = j:result()
 			local _, t = next(result_json)
 			if not t then
 				vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 
@@ -377,12 +380,14 @@ function M.get_pr_number(callback)
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
 				vim.notify("No PR open for this branch")
+				callback(nil)
 				return
 			end
 			local result_json = j:result()
 			local _, t = next(result_json)
 			if not t then
 				vim.notify("No PR open for this branch")
+				callback(nil)
 				return
 			end
 
@@ -703,7 +708,7 @@ function M.get_hunks(callback)
 					-- An exit-0 `gh pr diff` with no output is an empty diff, not a
 					-- failure, so this notifies but still settles as a cached result.
 					if not t then
-						vim.notify("No result from gh pr diff command. Is a gh cli installed?")
+						vim.notify("gh pr diff returned no output: this PR has an empty diff.")
 					end
 
 					if not M._fetch:owns("hunks", token) then
@@ -820,6 +825,11 @@ function M.reply(comment_id, body, callback)
 		end
 
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
+			if not pr_number then
+				callback(false)
+				return
+			end
+
 			-- gh api \
 			--   --method POST \
 			--   -H "Accept: application/vnd.github+json" \

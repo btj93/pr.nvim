@@ -380,10 +380,12 @@ function M.refresh(opts)
 		git.clear_comments()
 	end
 	refresh_in_progress = true
-	git.get_comments(vim.schedule_wrap(function(new_comments)
+	git.get_comments(vim.schedule_wrap(function(new_comments, err)
 		refresh_in_progress = false
 
-		if show_diff then
+		-- A failed refetch settles with an empty fallback over the just-cleared
+		-- cache, so diffing it would report every live thread as deleted.
+		if show_diff and not err then
 			local msg = M._diff_comments(old_snapshot, new_comments)
 			if msg then
 				vim.notify(msg)

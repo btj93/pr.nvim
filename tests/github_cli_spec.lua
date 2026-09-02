@@ -863,4 +863,229 @@ describe("github provider through real CLI plumbing", function()
 		end
 		assert.equals(2, graphql)
 	end)
+
+	-- The reject/owns sites below are the template two more providers copy, so
+	-- each settle path gets its own pin. `gh pr view` exiting non-zero and a
+	-- missing origin remote are the two ways the prelude getters fail; before
+	-- they settled their own callbacks the resource stayed "loading" forever
+	-- and every later caller joined a waiter list nothing would drain.
+
+	local function gh_calls_matching(needle)
+		local n = 0
+		for _, argv in ipairs(shim.calls("gh")) do
+			if table.concat(argv, " "):find(needle, 1, true) then
+				n = n + 1
+			end
+		end
+		return n
+	end
+
+	it("get_comments settles and stays retryable when gh pr view fails", function()
+		shim.stub("gh", { { match = { "pr", "view" }, exit = 1 } })
+
+		local value, err, called
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on a failed gh pr view")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", gh._fetch:status("comments"))
+		assert.equals(0, gh_calls_matching("graphql"))
+
+		-- Retryable, not wedged: once the PR resolves, the next caller fetches.
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = '{"data":{"repository":{"pullRequest":{"reviewThreads":{"edges":[]}}}}}' },
+		})
+		local second
+		gh.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "get_comments after the failure")
+		assert.same({}, second)
+		assert.equals(1, gh_calls_matching("graphql"))
+	end)
+
+	it("get_comments settles when the origin remote is gone", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("gh", { PR_VIEW_NUMBER })
+
+		local value, err, called
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles without repo info")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, gh_calls_matching("graphql"))
+	end)
+
+	it("get_comments settles on an empty graphql response", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = "" },
+		})
+
+		local value, err, called
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on empty stdout")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", gh._fetch:status("comments"))
+	end)
+
+	it("get_comments settles on an unexpected graphql structure", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = '{"data":{}}' },
+		})
+
+		local value, err, called
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on an unparseable response")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", gh._fetch:status("comments"))
+	end)
+
+	it("get_hunks settles with an error when gh pr diff fails", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "pr", "diff" }, exit = 1 },
+		})
+
+		local value, err, called
+		gh.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "failed get_hunks settles its caller")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.same({}, gh.hunks)
+		assert.equals("error", gh._fetch:status("hunks"))
+
+		-- A failure is not cached as success: the next caller runs `gh pr diff`
+		-- again instead of replaying an empty result.
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "pr", "diff" }, stdout_file = FIXTURES .. "/pr_diff.txt" },
+		})
+		local second
+		gh.get_hunks(function(h)
+			second = h
+		end)
+		wait_for(function()
+			return second ~= nil and next(second) ~= nil
+		end, "get_hunks after the failure")
+		assert.equals(2, gh_calls_matching("diff"))
+	end)
+
+	it("get_hunks settles when gh pr view fails", function()
+		shim.stub("gh", { { match = { "pr", "view" }, exit = 1 } })
+
+		local value, err, called
+		gh.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_hunks settles on a failed gh pr view")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, gh_calls_matching("diff"))
+	end)
+
+	it("get_hunks settles when the origin remote is gone", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("gh", { PR_VIEW_NUMBER })
+
+		local value, err, called
+		gh.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_hunks settles without repo info")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, gh_calls_matching("diff"))
+	end)
+
+	it("a comments fetch invalidated mid-flight never publishes into the cache", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout_file = FIXTURES .. "/review_threads.json" },
+		})
+
+		local err, called
+		gh.get_comments(function(_, e)
+			err, called = e, true
+		end)
+		-- The chain is still on its first subprocess here, so this retires the
+		-- token the in-flight completion is holding.
+		gh.clear_comments()
+		assert.is_true(called, "invalidate settles the waiting caller")
+		assert.is_not_nil(err)
+
+		wait_for(function()
+			return gh_calls_matching("graphql") == 1
+		end, "the retired fetch still ran to completion")
+		vim.wait(500, function()
+			return false
+		end)
+
+		-- The completion lost its token, so the fixture's threads must not have
+		-- landed in the cache a `clear_comments` just emptied.
+		assert.same({}, gh.comments)
+		assert.equals("cold", gh._fetch:status("comments"))
+	end)
+
+	it("a hunks fetch invalidated mid-flight never publishes into the cache", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "pr", "diff" }, stdout_file = FIXTURES .. "/pr_diff.txt" },
+		})
+
+		local err, called
+		gh.get_hunks(function(_, e)
+			err, called = e, true
+		end)
+		gh.clear_hunks()
+		assert.is_true(called, "invalidate settles the waiting caller")
+		assert.is_not_nil(err)
+
+		wait_for(function()
+			return gh_calls_matching("diff") == 1
+		end, "the retired fetch still ran to completion")
+		vim.wait(500, function()
+			return false
+		end)
+
+		assert.same({}, gh.hunks)
+		assert.equals("cold", gh._fetch:status("hunks"))
+	end)
 end)
