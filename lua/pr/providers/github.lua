@@ -479,7 +479,6 @@ function M.get_comments(callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			M._fetch:reject("comments", token, {}, "no repo info")
 			return
 		end
@@ -679,7 +678,6 @@ function M.get_hunks(callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			M._fetch:reject("hunks", token, {}, "no repo info")
 			return
 		end
@@ -742,7 +740,6 @@ function M.add_reaction(comment_id, reaction_key, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -785,7 +782,6 @@ function M.remove_reaction(comment_id, reaction_id, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -820,7 +816,7 @@ function M.reply(comment_id, body, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
+			callback(false)
 			return
 		end
 
@@ -872,12 +868,13 @@ function M.comment(relative_path, start_line, end_line, body, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
+			callback(false)
 			return
 		end
 
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
 			if not pr_number then
+				callback(false)
 				return
 			end
 
@@ -939,7 +936,6 @@ function M.edit_comment(comment_id, body, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 
@@ -1120,7 +1116,6 @@ function M.delete_comment(comment_id, callback)
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
-			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
 			return
 		end
 

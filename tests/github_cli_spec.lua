@@ -1088,4 +1088,92 @@ describe("github provider through real CLI plumbing", function()
 		assert.same({}, gh.hunks)
 		assert.equals("cold", gh._fetch:status("hunks"))
 	end)
+	-- The write paths (M.comment / M.reply) settle their `fun(success: boolean)`
+	-- callback on every guard, so the UI reports a failure instead of leaving a
+	-- draft popup waiting forever. The repo-info message is owned by
+	-- M.get_repo_info alone, so it is echoed exactly once per failed chain.
+	local function capture_echo()
+		local echoed = {}
+		local saved = vim.api.nvim_echo
+		vim.api.nvim_echo = function(chunks, ...)
+			for _, c in ipairs(chunks or {}) do
+				table.insert(echoed, c[1])
+			end
+			return saved(chunks, ...)
+		end
+		return echoed, function()
+			vim.api.nvim_echo = saved
+		end
+	end
+
+	local function count_echoed(echoed, needle)
+		local n = 0
+		for _, msg in ipairs(echoed) do
+			if type(msg) == "string" and msg:find(needle, 1, true) then
+				n = n + 1
+			end
+		end
+		return n
+	end
+
+	it("comment settles with false when the origin remote is gone, echoing the reason once", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("gh", { PR_VIEW_NUMBER })
+		local echoed, restore = capture_echo()
+
+		local ok, called
+		local run = function()
+			gh.comment("lua/a.lua", 1, 2, "body", function(success)
+				ok, called = success, true
+			end)
+			wait_for(function()
+				return called
+			end, "comment settles without repo info")
+		end
+		local pcall_ok, pcall_err = pcall(run)
+		restore()
+		assert(pcall_ok, pcall_err)
+
+		assert.is_false(ok)
+		assert.equals(0, #shim.calls("gh"))
+		assert.equals(1, count_echoed(echoed, "Could not determine GitHub repository"))
+	end)
+
+	it("reply settles with false when the origin remote is gone, echoing the reason once", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("gh", { PR_VIEW_NUMBER })
+		local echoed, restore = capture_echo()
+
+		local ok, called
+		local run = function()
+			gh.reply(7, "body", function(success)
+				ok, called = success, true
+			end)
+			wait_for(function()
+				return called
+			end, "reply settles without repo info")
+		end
+		local pcall_ok, pcall_err = pcall(run)
+		restore()
+		assert(pcall_ok, pcall_err)
+
+		assert.is_false(ok)
+		assert.equals(0, #shim.calls("gh"))
+		assert.equals(1, count_echoed(echoed, "Could not determine GitHub repository"))
+	end)
+
+	it("comment settles with false when no PR is open for the branch", function()
+		shim.stub("gh", { { match = { "pr", "view" }, exit = 1 } })
+
+		local ok, called
+		gh.comment("lua/a.lua", 1, 2, "body", function(success)
+			ok, called = success, true
+		end)
+		wait_for(function()
+			return called
+		end, "comment settles without a PR number")
+
+		assert.is_false(ok)
+		assert.equals(0, gh_calls_matching("--method"))
+	end)
 end)

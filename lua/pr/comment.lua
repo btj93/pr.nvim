@@ -404,19 +404,26 @@ function M.refresh(opts)
 		-- Drop drafts whose target (file / thread / comment) no longer exists
 		-- in the refreshed cache. Keeps the drafts file from accumulating
 		-- orphans across rebases and upstream deletions.
-		pcall(function()
-			local known = { paths = {}, thread_ids = {}, comment_ids = {} }
-			for path, threads in pairs(new_comments or {}) do
-				known.paths[path] = true
-				for _, t in ipairs(threads) do
-					known.thread_ids[tostring(t.id)] = true
-					for _, c in ipairs(t.comments or {}) do
-						known.comment_ids[tostring(c.database_id)] = true
+		--
+		-- Gated on the same `err` as the summary above: a failed refetch hands
+		-- back an empty fallback over the just-cleared cache, so every live
+		-- target would look orphaned and every in-progress draft would be
+		-- deleted from disk.
+		if not err then
+			pcall(function()
+				local known = { paths = {}, thread_ids = {}, comment_ids = {} }
+				for path, threads in pairs(new_comments or {}) do
+					known.paths[path] = true
+					for _, t in ipairs(threads) do
+						known.thread_ids[tostring(t.id)] = true
+						for _, c in ipairs(t.comments or {}) do
+							known.comment_ids[tostring(c.database_id)] = true
+						end
 					end
 				end
-			end
-			require("pr.drafts").invalidate_orphans(known)
-		end)
+				require("pr.drafts").invalidate_orphans(known)
+			end)
+		end
 
 		pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "PRCommentsRefreshed" })
 	end))
