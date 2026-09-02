@@ -207,6 +207,22 @@ function M.redact_argv(args, secrets)
 	return out
 end
 
+--- A provider response that exited 0 but could not be decoded or normalized:
+--- malformed JSON, or a schema the normalizer indexed into and raised on. The
+--- response body is NEVER echoed -- it is the full API payload, carrying
+--- unpublished review text. `operation` names the provider and the call, which
+--- is what a user needs to place the failure. The raised Lua error is
+--- `debug`-gated and redacted like every other diagnostic detail.
+---@param operation string
+---@param err any The value a `pcall` returned as its failure.
+function M.response_unreadable(operation, err)
+	vim.notify(operation .. " returned an unreadable response.", vim.log.levels.ERROR)
+	if not config.opts.debug then
+		return
+	end
+	vim.notify(M.redact_text(tostring(err)), vim.log.levels.INFO)
+end
+
 ---@param operation string
 ---@param command string
 ---@param args string[]|nil

@@ -789,6 +789,77 @@ describe("bitbucket provider through real CLI plumbing", function()
 		assert.equals("error", bb._fetch:status("comments"))
 	end)
 
+	-- run_curl already pcalls the decode, but normalization is not protected, and
+	-- a raise inside the window the token owns skips every settle path: the
+	-- resource stays "loading" and each later caller joins a queue nothing drains.
+	local DELETED_AUTHOR_COMMENTS = '{"values":[{"id":100,"content":{"raw":"orphaned"},"user":null,'
+		.. '"created_on":"2024-01-01T00:00:00Z","updated_on":"2024-01-01T00:00:00Z","deleted":false,'
+		.. '"inline":{"path":"src/foo.lua","to":2}}]}'
+
+	it("get_comments settles when normalization raises on a deleted author", function()
+		-- A deleted Bitbucket account serializes as `"user": null`, which decodes
+		-- to vim.NIL. vim.NIL is TRUTHY, so `c.user and c.user.nickname` indexes it
+		-- and raises inside _normalize_comments.
+		shim.stub("curl", {
+			API_USER,
+			PR_NUMBER_QUERY,
+			DIFF_ROUTE,
+			{ match = { "comments?pagelen=100" }, stdout = DELETED_AUTHOR_COMMENTS },
+		})
+
+		local value, err, called
+		bb.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles when normalization raises")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", bb._fetch:status("comments"))
+		assert.same({}, bb.comments)
+
+		-- Retryable, not wedged: the next caller owns a fresh fetch.
+		shim.stub("curl", { API_USER, PR_NUMBER_QUERY, DIFF_ROUTE, COMMENTS_ROUTE })
+		local second
+		bb.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil and next(second) ~= nil
+		end, "get_comments after the raise")
+		assert.is_not_nil(second["src/foo.lua"])
+		assert.equals(2, curl_count("comments?pagelen=100"))
+	end)
+
+	it("get_comments settles when the bitbucket user lookup fails", function()
+		-- bitbucket front-loads get_git_user the way gitlab does, so an
+		-- unauthenticated `curl` reaches the comments chain through that failure
+		-- branch. The lookup only feeds viewer_did_author, so the chain runs on and
+		-- resolves with an unknown viewer rather than failing the fetch.
+		shim.stub("curl", {
+			{ match = { "/user" }, exit = 22, stderr = "curl: (22) 401" },
+			PR_NUMBER_QUERY,
+			DIFF_ROUTE,
+			COMMENTS_ROUTE,
+		})
+
+		local value, err, called
+		bb.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on a failed user lookup")
+
+		assert.is_nil(err)
+		assert.is_not_nil(value["src/foo.lua"])
+		assert.equals("", bb.git_user)
+		assert.equals("loaded", bb._fetch:status("comments"))
+		assert.equals(1, curl_count("comments?pagelen=100"))
+	end)
+
 	it("get_hunks settles with an error when the diff request fails", function()
 		shim.stub("curl", { PR_NUMBER_QUERY, { match = { "/diff" }, exit = 22, stderr = "curl: (22) 500" } })
 

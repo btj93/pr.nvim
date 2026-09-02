@@ -588,20 +588,35 @@ function M.get_comments(callback)
 						return
 					end
 
-					local data = vim.json.decode(t)
-					local comments, thread_count, unsolved_count = M._normalize_comments(data)
-					if not comments then
-						vim.notify("Unexpected GraphQL response structure.")
-						M._fetch:reject("comments", token, {}, "unexpected graphql response")
-						return
-					end
+					-- Decoding and normalization are the only unguarded raise sites left
+					-- in the window this token owns, and a raise here settles nothing:
+					-- the resource stays "loading" and every later caller joins a queue
+					-- nothing drains, which `:PRRefresh` cannot recover because
+					-- comment.refresh clears its in-progress flag in the callback that
+					-- never fires. An API response is external input (a deleted author
+					-- serializes as `"author": null`, and vim.NIL is truthy; an exit-0
+					-- proxy error page is not JSON at all), so it is guarded here rather
+					-- than by adding a field check per schema change.
+					local settled, failure = pcall(function()
+						local data = vim.json.decode(t)
+						local comments, thread_count, unsolved_count = M._normalize_comments(data)
+						if not comments then
+							vim.notify("Unexpected GraphQL response structure.")
+							M._fetch:reject("comments", token, {}, "unexpected graphql response")
+							return
+						end
 
-					if not M._fetch:owns("comments", token) then
-						return
+						if not M._fetch:owns("comments", token) then
+							return
+						end
+						M.comments = comments
+						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
+						M._fetch:resolve("comments", token, comments)
+					end)
+					if not settled then
+						log.response_unreadable("GitHub review-thread fetch", failure)
+						M._fetch:reject("comments", token, {}, "unreadable review-thread response")
 					end
-					M.comments = comments
-					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-					M._fetch:resolve("comments", token, comments)
 				end),
 			}, function()
 				M._fetch:reject("comments", token, {}, "gh not available")

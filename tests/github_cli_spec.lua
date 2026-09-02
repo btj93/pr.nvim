@@ -961,6 +961,91 @@ describe("github provider through real CLI plumbing", function()
 		assert.equals("error", gh._fetch:status("comments"))
 	end)
 
+	-- A raise inside the window the token owns skips every settle path, so the
+	-- resource stays "loading" and each later caller joins a queue nothing
+	-- drains. That is worse than a lost fetch: `comment.refresh` clears its
+	-- `refresh_in_progress` flag in the callback that never fires, so `:PRRefresh`
+	-- stops issuing subprocesses entirely and the comment surface is dead until
+	-- Neovim restarts. Both raise sites below are ordinary API responses.
+	local DELETED_AUTHOR_THREADS = '{"data":{"repository":{"pullRequest":{"reviewThreads":{"edges":[{"node":{"id":"T1",'
+		.. '"isResolved":false,"resolvedBy":null,"isOutdated":false,"isCollapsed":false,"viewerCanReply":true,'
+		.. '"viewerCanResolve":true,"viewerCanUnresolve":false,"comments":{"edges":[{"node":{"databaseId":100,'
+		.. '"author":null,"body":"orphaned","path":"lua/a.lua","publishedAt":"2024-01-01T00:00:00Z",'
+		.. '"updatedAt":"2024-01-01T00:00:00Z","viewerDidAuthor":false,"viewerCanUpdate":false,'
+		.. '"viewerCanDelete":false,"viewerCanReact":true,"line":1,"startLine":null,"originalLine":null,'
+		.. '"originalStartLine":null,"reactionGroups":[],"reactions":{"nodes":[]}}}]}}}]}}}}}'
+
+	it("get_comments settles when normalization raises on a deleted author", function()
+		-- A deleted GitHub account serializes as `"author": null`, which decodes
+		-- to vim.NIL. vim.NIL is TRUTHY, so `comment.author and comment.author.login`
+		-- indexes it and raises inside _normalize_comments.
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = DELETED_AUTHOR_THREADS },
+		})
+
+		local value, err, called
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles when normalization raises")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", gh._fetch:status("comments"))
+		assert.same({}, gh.comments)
+
+		-- Retryable, not wedged: the next caller owns a fresh fetch rather than
+		-- joining a waiter list nothing drains.
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout_file = FIXTURES .. "/review_threads.json" },
+		})
+		local second
+		gh.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil and next(second) ~= nil
+		end, "get_comments after the raise")
+		assert.is_not_nil(second["lua/a.lua"])
+		assert.equals(2, gh_calls_matching("graphql"))
+	end)
+
+	it("get_comments settles and names the operation when the response is not JSON", function()
+		-- An exit-0 response whose stdout is not complete JSON: a proxy error page,
+		-- a truncated body. gitlab pcalls its decode and bitbucket pcalls inside
+		-- run_curl; github had no decode-error path at all.
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = "<html>502 Bad Gateway</html>\n" },
+		})
+
+		local value, err, called
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on an undecodable response")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", gh._fetch:status("comments"))
+
+		-- The report names the provider and operation. The response body carries
+		-- user-authored review text, so it is never echoed.
+		local named = vim.tbl_filter(function(msg)
+			return msg:find("GitHub review-thread fetch", 1, true) ~= nil
+		end, notify_msgs())
+		assert(#named > 0, "expected a notification naming the operation, got: " .. vim.inspect(notify_msgs()))
+		for _, msg in ipairs(notify_msgs()) do
+			assert.is_nil(msg:find("502 Bad Gateway", 1, true), "response body echoed in: " .. msg)
+		end
+	end)
+
 	it("get_hunks settles with an error when gh pr diff fails", function()
 		shim.stub("gh", {
 			PR_VIEW_NUMBER,

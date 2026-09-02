@@ -43,7 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of each starting their own.
 - Provider read failures now settle their callers with an error instead of
   returning silently, which previously left inline comments, hunks, and the
-  pickers waiting forever on a fetch that had already failed.
+  pickers waiting forever on a fetch that had already failed. This covers a
+  response the provider cannot read as well as one the command reports as
+  failed: a review comment whose author account was deleted, or an exit-0
+  response that is not valid JSON, is reported as a failed fetch naming the
+  provider and operation (never the response body) and the next `:PRRefresh`
+  retries it. Previously such a response raised mid-fetch, and because the
+  raise skipped the callback that clears `comment.refresh`'s in-progress
+  flag, every later refresh became a no-op and the comment surface stayed
+  dead until Neovim restarted.
+- A failed re-fetch after replying to, reacting to, or resolving a thread no
+  longer closes the review-thread popup with "Thread no longer exists". The
+  popup stays open with any in-progress reply intact and reports that the
+  refresh failed.
 
 ## [0.1.0] - 2026-07-11
 

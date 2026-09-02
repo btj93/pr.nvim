@@ -72,6 +72,10 @@ end
 function Coordinator:begin(name, callback)
 	local e = entry(self, name)
 	if e.status == "loaded" then
+		-- Deliberately NOT queued. Every getter passes its callback here and then
+		-- invokes it itself on the "loaded" branch, which reads like a double
+		-- settle and is not one only because of this early return. Queue the
+		-- callback here and all six getters start settling twice.
 		return "loaded", nil
 	end
 	if e.status == "loading" then

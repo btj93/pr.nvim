@@ -790,6 +790,48 @@ diff --git a/src/foo.lua b/src/foo.lua
 		assert.equals(1, #calls_with("glab", "graphql"))
 	end)
 
+	-- The decode is already pcall'd here, but normalization is not, and a raise
+	-- inside the window the token owns skips every settle path: the resource
+	-- stays "loading" and each later caller joins a queue nothing drains.
+	local DELETED_AUTHOR_DISCUSSIONS = '{"data":{"project":{"mergeRequest":{"diffRefs":{"baseSha":"basefix111",'
+		.. '"headSha":"head222","startSha":"start333"},"discussions":{"nodes":[{"id":"gid://gitlab/Discussion/abc123",'
+		.. '"resolvable":true,"resolved":false,"resolvedBy":null,"notes":{"nodes":[{"id":"gid://gitlab/Note/100",'
+		.. '"author":null,"body":"first note","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z",'
+		.. '"system":false,"userPermissions":{"adminNote":false,"awardEmoji":true},"position":{"newLine":5,'
+		.. '"oldLine":null,"newPath":"src/foo.lua","oldPath":null,"lineRange":null},"awardEmoji":{"nodes":[]}}]}}]}}}}}'
+
+	it("get_comments settles when normalization raises on a deleted author", function()
+		-- A deleted GitLab account serializes as `"author": null`, which decodes to
+		-- vim.NIL. vim.NIL is TRUTHY, so `note.author and note.author.username`
+		-- indexes it and raises inside _normalize_comments.
+		shim.stub("glab", { MR_VIEW_IID, API_USER, { match = { "api", "graphql" }, stdout = DELETED_AUTHOR_DISCUSSIONS } })
+
+		local value, err, called
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles when normalization raises")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", glab._fetch:status("comments"))
+		assert.same({}, glab.comments)
+
+		-- Retryable, not wedged: the next caller owns a fresh fetch.
+		shim.stub("glab", { MR_VIEW_IID, API_USER, API_GRAPHQL })
+		local second
+		glab.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil and next(second) ~= nil
+		end, "get_comments after the raise")
+		assert.is_not_nil(second["src/foo.lua"])
+		assert.equals(2, #calls_with("glab", "graphql"))
+	end)
+
 	-- Point PATH at a directory holding nothing but `git`, so the provider CLI is
 	-- genuinely absent and plenary's `Job:new` executable check fires. git is
 	-- still never shimmed: the entry is a symlink to the real binary.

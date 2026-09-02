@@ -669,22 +669,36 @@ function M.get_comments(callback)
 							return
 						end
 
-						local comments, thread_count, unsolved_count, diff_refs = M._normalize_comments(data, M.git_user)
-						if not comments then
-							vim.notify("Unexpected GraphQL response structure.")
-							M._fetch:reject("comments", token, {}, "unexpected graphql response")
-							return
-						end
+						-- The decode above is guarded, normalization is not, and a raise in
+						-- the window this token owns settles nothing: the resource stays
+						-- "loading" and every later caller joins a queue nothing drains,
+						-- which `:PRRefresh` cannot recover because comment.refresh clears
+						-- its in-progress flag in the callback that never fires. A deleted
+						-- GitLab account serializes as `"author": null`, and vim.NIL is
+						-- truthy, so the field guards below do not catch it. Guarded here
+						-- rather than per field, which the next schema change would reopen.
+						local settled, failure = pcall(function()
+							local comments, thread_count, unsolved_count, diff_refs = M._normalize_comments(data, M.git_user)
+							if not comments then
+								vim.notify("Unexpected GraphQL response structure.")
+								M._fetch:reject("comments", token, {}, "unexpected graphql response")
+								return
+							end
 
-						if not M._fetch:owns("comments", token) then
-							return
+							if not M._fetch:owns("comments", token) then
+								return
+							end
+							if diff_refs then
+								M.diff_refs = diff_refs
+							end
+							M.comments = comments
+							vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
+							M._fetch:resolve("comments", token, comments)
+						end)
+						if not settled then
+							log.response_unreadable("GitLab discussion fetch", failure)
+							M._fetch:reject("comments", token, {}, "unreadable discussion response")
 						end
-						if diff_refs then
-							M.diff_refs = diff_refs
-						end
-						M.comments = comments
-						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-						M._fetch:resolve("comments", token, comments)
 					end),
 				}, function()
 					M._fetch:reject("comments", token, {}, "glab not available")

@@ -658,7 +658,17 @@ function M.make_comments_layout(thread, relative_path)
 		if type(git.clear_comments) == "function" then
 			git.clear_comments()
 		end
-		git.get_comments(vim.schedule_wrap(function(new_comments_by_file)
+		git.get_comments(vim.schedule_wrap(function(new_comments_by_file, err)
+			-- clear_comments() ran above, so a rejected re-fetch settles with an
+			-- empty table over an emptied cache. Iterating that would read as "the
+			-- thread was deleted" and tear the layout down, discarding an
+			-- in-progress reply draft and reporting something false about a thread
+			-- that is still there. Same rule as comment.refresh: a destructive
+			-- branch checks `err` before trusting an empty value.
+			if err then
+				vim.notify("Could not refresh this thread: " .. tostring(err), vim.log.levels.WARN)
+				return
+			end
 			for _, file_threads in pairs(new_comments_by_file or {}) do
 				for _, t in ipairs(file_threads) do
 					if t.id == thread.id then

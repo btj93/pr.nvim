@@ -555,17 +555,33 @@ function M.get_comments(callback)
 							M._fetch:reject("comments", token, {}, "comments request failed")
 							return
 						end
-						local comments, thread_count, unsolved_count = M._normalize_comments(data, M.git_user, current_paths_arg)
-						if not comments then
-							M._fetch:reject("comments", token, {}, "unexpected comments response")
-							return
+						-- run_curl already guards the decode, normalization is not, and a
+						-- raise in the window this token owns settles nothing: the resource
+						-- stays "loading" and every later caller joins a queue nothing
+						-- drains, which `:PRRefresh` cannot recover because comment.refresh
+						-- clears its in-progress flag in the callback that never fires. A
+						-- deleted Bitbucket account serializes as `"user": null`, and
+						-- vim.NIL is truthy, so the field guards below do not catch it.
+						-- Guarded here rather than per field, which the next schema change
+						-- would reopen.
+						local settled, failure = pcall(function()
+							local comments, thread_count, unsolved_count = M._normalize_comments(data, M.git_user, current_paths_arg)
+							if not comments then
+								M._fetch:reject("comments", token, {}, "unexpected comments response")
+								return
+							end
+							if not M._fetch:owns("comments", token) then
+								return
+							end
+							M.comments = comments
+							vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
+							M._fetch:resolve("comments", token, comments)
+						end)
+						if not settled then
+							-- run_curl names its method and path; this follows that shape.
+							log.response_unreadable("Bitbucket GET " .. path, failure)
+							M._fetch:reject("comments", token, {}, "unreadable comments response")
 						end
-						if not M._fetch:owns("comments", token) then
-							return
-						end
-						M.comments = comments
-						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-						M._fetch:resolve("comments", token, comments)
 					end)
 				end))
 			end))

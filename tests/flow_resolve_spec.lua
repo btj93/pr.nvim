@@ -134,4 +134,36 @@ describe("flow: resolve / unresolve via r", function()
 		env.drain()
 		assert.equals("", vim.v.errmsg, "refresh_thread crashed after unmount: " .. vim.v.errmsg)
 	end)
+
+	it("a failed re-fetch keeps the popup open instead of claiming the thread is gone", function()
+		-- refresh_thread clears the comments cache before re-fetching, so a
+		-- rejected re-fetch settles with an empty table. Iterating that empty value
+		-- without checking `err` reads as "the thread was deleted": the layout
+		-- unmounts, taking any in-progress reply draft with it, and tells the user
+		-- something false about a thread that is still there.
+		local comments_popup = mount_with({ is_resolved = false, viewer_can_resolve = true, viewer_can_unresolve = true })
+
+		fake.get_comments = function(cb)
+			if cb then
+				cb({}, "review-thread fetch failed")
+			end
+		end
+
+		env.feed("r")
+		env.wait_for(function()
+			return called(fake, "resolve_thread") ~= nil
+		end, 2000, "resolve")
+		env.drain(200)
+
+		for _, n in ipairs(env.notifications) do
+			assert.is_nil(tostring(n.msg):find("no longer exists", 1, true), "false teardown notice: " .. tostring(n.msg))
+		end
+		assert.is_not_nil(comments_popup.bufnr, "popup was unmounted after a failed re-fetch")
+		assert.is_true(vim.api.nvim_buf_is_valid(comments_popup.bufnr), "popup buffer was wiped after a failed re-fetch")
+
+		local warned = vim.tbl_filter(function(n)
+			return tostring(n.msg):find("Could not refresh", 1, true) ~= nil
+		end, env.notifications)
+		assert(#warned > 0, "expected a refresh-failed notice, got: " .. vim.inspect(env.notifications))
+	end)
 end)
