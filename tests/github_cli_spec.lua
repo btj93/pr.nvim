@@ -302,19 +302,13 @@ describe("github provider through real CLI plumbing", function()
 			},
 		})
 
-		-- get_comments' failure branch returns WITHOUT invoking the callback
-		-- (github.lua:557) -- a fetch-lifecycle bug owned by the next slice of
-		-- the spec, not this one. So wait on the notification, not a callback
-		-- that never fires.
-		gh.get_comments(function() end)
+		local done
+		gh.get_comments(function(c)
+			done = c
+		end)
 		wait_for(function()
-			for _, m in ipairs(notify_msgs()) do
-				if tostring(m):find("Is a gh cli installed?", 1, true) then
-					return true
-				end
-			end
-			return false
-		end, "review-thread fetch failure notification")
+			return done ~= nil
+		end, "get_comments cb")
 
 		local out = table.concat(notify_msgs(), "\n")
 		assert.truthy(out:find("query=<redacted>", 1, true))

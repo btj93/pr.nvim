@@ -33,8 +33,8 @@
 --   get_base_sha(callback?)                                        -> callback(sha)
 --   get_git_root(callback?)                                        -> callback(git_root)
 --   get_git_user(callback?)                                        -> callback(git_user)
---   get_comments(callback?)                                        -> callback(comments)
---   get_hunks(callback?)                                           -> callback(hunks)
+--   get_comments(callback?)                                        -> callback(comments, err?)
+--   get_hunks(callback?)                                           -> callback(hunks, err?)
 --   add_reaction(comment_id, reaction_key, callback?)              -> callback(success)
 --   remove_reaction(comment_id, reaction_id, callback?)            -> callback(success)
 --   reply(comment_id, body, callback?)                             -> callback(success)
@@ -60,6 +60,17 @@
 --   clear_collaborators() / clear_issues()
 --   clear_pr_metadata() / clear_checks() / clear_pending_review()
 --   clear() / clear_comments() / clear_hunks() / clear_pr_number() / clear_pr_list()
+--
+-- The `err` on get_comments / get_hunks is additive: it is a second argument
+-- appended after the value, so a callback declared with one parameter stays
+-- correct and simply ignores it. It is nil on success (including a successful
+-- empty result, which is cached and not refetched). It is a short non-nil
+-- string only when the fetch failed, and in that case the value is the empty
+-- fallback rather than stale or partial data. Callers that would do something
+-- destructive with an empty value (deleting drafts, reporting "all comments
+-- resolved") must check `err` first; callers that only render can keep
+-- ignoring it. Both getters settle every registered callback exactly once,
+-- through `pr.fetch_state`.
 --
 -- thread.id, comment.database_id, and reactor.database_id are opaque to
 -- consumers — the provider receives back exactly what it emitted, so each

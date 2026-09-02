@@ -64,6 +64,7 @@ Two strategy points are resolved by string lookup:
 | `health.lua` | `:checkhealth pr` |
 | `config.lua` | Default `M.opts` + `setup()` merge |
 | `log.lua` | Redaction helpers (`redact_text`, `redact_argv`, `payload_secrets`) + `command_failed`, the only path that prints subprocess diagnostic detail; argv/stderr detail is gated on `config.opts.debug` |
+| `fetch_state.lua` | Per-provider fetch lifecycle: `cold`/`loading`/`loaded`/`error` + generation + waiters. Caches empty results, coalesces concurrent callers, settles every caller exactly once. Knows nothing about data shapes and starts no jobs. |
 | `util.lua` | Cross-cutting helpers (`open_pr_file`, `is_valid_win/buf`) + `start_job`, the shared `Job:new` spawn guard every provider routes its subprocess launches through |
 
 ### Two parallel feature modules: `comment` and `hunk`
@@ -88,7 +89,7 @@ Use `require("pr").refresh()` or `:PRRefresh` to refresh comments + hunks + pr_n
 - Submit review (S1c): `M.pending_review_id` (github only — server-side state).
 - Completion (S3b): `M.collaborators`, `M.issues`.
 
-Every getter is "fetch-once": short-circuits if the field is already populated, else spawns a `plenary.job`, populates on success, invokes the callback. Invalidation: `clear()` (everything), or fine-grained `clear_comments`, `clear_hunks`, `clear_pr_number`, `clear_pr_list`, `clear_pr_metadata`, `clear_checks`, `clear_pending_review`, `clear_collaborators`, `clear_issues`. `M.refresh()` in `init.lua` calls all the fine-grained clears.
+Most getters are "fetch-once": short-circuit if the field is already populated, else spawn a `plenary.job`, populate on success, invoke the callback. **`get_comments` and `get_hunks` are the exception** — they short-circuit on `M._fetch`'s status rather than on the field being non-empty, so a successful *empty* result is cached instead of refetched forever, concurrent callers join one in-flight chain, and a failure settles every caller with `(fallback, err)`. Invalidation: `clear()` (everything), or fine-grained `clear_comments`, `clear_hunks`, `clear_pr_number`, `clear_pr_list`, `clear_pr_metadata`, `clear_checks`, `clear_pending_review`, `clear_collaborators`, `clear_issues`. `M.refresh()` in `init.lua` calls all the fine-grained clears.
 
 All `gh`/`git` calls are async via `plenary.job`. Callbacks that touch Neovim APIs must be wrapped in `vim.schedule_wrap` — done consistently; any new provider work must follow suit.
 
@@ -261,6 +262,7 @@ All three pickers (`pickers/{snacks,telescope,fzf}.lua`) share a **uniform pure 
 - User-visible messages go through `vim.notify` for transient info and `vim.api.nvim_echo({{msg, "ErrorMsg"|"WarningMsg"}}, true, {})` for errors/warnings. Match the surrounding style of the function you're editing.
 - Errors from `gh`/`git` subprocesses are reported with the literal hint "Is a gh cli installed?" / "Is a git cli installed?" — keep this phrasing if you add similar error paths so users get a consistent signal.
 - Provider subprocess failure branches must route through `log.command_failed` (or `log.redact_text` for an error string handed back to a caller). Never `vim.notify` raw argv, `j:result()`, or `j:stderr_result()` — argv carries `body=`/`query=` payloads and Bitbucket's `-u user:app-password`, and stdout is the full API response. `tests/log_spec.lua` pins the redaction contract; the audit greps in the release-stabilization plan catch the common regressions.
+- Provider read getters (`get_comments`, `get_hunks`) must route every exit through `M._fetch:resolve` or `M._fetch:reject`, and publish into `M.comments` / `M.hunks` only while `M._fetch:owns(...)` is true. A `return` that settles nothing leaves every caller hanging — that is the bug `fetch_state` exists to prevent, and `tests/fetch_state_spec.lua` plus the per-provider lifecycle tests pin it.
 - `M.actions` entries use `menu_text` / `menu_desc` / `popup_hint` / `show_hint` (NOT `menu` / `hint`). Spec docs that say otherwise are stale.
 
 ## Things to know before changing behavior

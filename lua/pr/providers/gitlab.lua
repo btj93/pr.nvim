@@ -610,8 +610,10 @@ query($fullPath: ID!, $iid: String!) {
 }
 ]]
 
----
----@param callback? fun(comments: Comments)
+--- Settles `callback` exactly once through `M._fetch`. `err` is additive and
+--- non-nil only on failure, where the value is `{}`; single-argument callbacks
+--- stay correct. See `providers/interface.lua`.
+---@param callback? fun(comments: Comments, err: string|nil)
 function M.get_comments(callback)
 	callback = callback or function(_, _) end
 
@@ -692,8 +694,10 @@ function M.get_comments(callback)
 	end))
 end
 
----
----@param callback? fun(hunks: Hunks)
+--- Settles `callback` exactly once through `M._fetch`. `err` is additive and
+--- non-nil only on failure, where the value is `{}`; single-argument callbacks
+--- stay correct. See `providers/interface.lua`.
+---@param callback? fun(hunks: Hunks, err: string|nil)
 function M.get_hunks(callback)
 	callback = callback or function(_, _) end
 

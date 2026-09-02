@@ -32,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is applied in both modes. Failure branches outside that diagnostic path still
   emit nothing extra under `debug`.
 
+### Fixed
+
+- An empty successful fetch of a provider read resource is now cached until
+  explicitly invalidated. A pull request with no diff hunks no longer re-runs
+  the provider's diff command on every buffer change, and one with no review
+  comments no longer refetches the empty thread list each time a picker,
+  `:PRQuickfix`, or comment navigation asks for it.
+- Concurrent callers for the same provider resource share one subprocess chain
+  instead of each starting their own.
+- Provider read failures now settle their callers with an error instead of
+  returning silently, which previously left inline comments, hunks, and the
+  pickers waiting forever on a fetch that had already failed.
+
 ## [0.1.0] - 2026-07-11
 
 Initial public release: inline PR review comments and diff hunks for Neovim
