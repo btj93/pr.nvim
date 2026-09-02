@@ -685,4 +685,182 @@ describe("github provider through real CLI plumbing", function()
 		end
 		assert.is_true(found, "expected the no-PR notification")
 	end)
+
+	it("caches an empty comments result instead of refetching", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = '{"data":{"repository":{"pullRequest":{"reviewThreads":{"edges":[]}}}}}' },
+		})
+
+		local first, second
+		gh.get_comments(function(c)
+			first = c
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_comments")
+		gh.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "second get_comments")
+
+		assert.same({}, first)
+		assert.same({}, second)
+
+		local function graphql_calls()
+			local n = 0
+			for _, argv in ipairs(shim.calls("gh")) do
+				if table.concat(argv, " "):find("graphql", 1, true) then
+					n = n + 1
+				end
+			end
+			return n
+		end
+
+		-- Cached: an empty result that refetched would issue a second graphql call.
+		assert.equals(1, graphql_calls())
+
+		-- ...and invalidation makes the NEXT call fetch again (spec line 209).
+		gh.clear_comments()
+		local third
+		gh.get_comments(function(c)
+			third = c
+		end)
+		wait_for(function()
+			return third ~= nil
+		end, "get_comments after clear")
+		assert.same({}, third)
+		assert.equals(2, graphql_calls())
+	end)
+
+	it("caches an empty hunks result and refetches after invalidation", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "pr", "diff" }, stdout = "" },
+		})
+
+		local function diff_calls()
+			local n = 0
+			for _, argv in ipairs(shim.calls("gh")) do
+				if table.concat(argv, " "):find("diff", 1, true) then
+					n = n + 1
+				end
+			end
+			return n
+		end
+
+		local first, second
+		gh.get_hunks(function(h)
+			first = h
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_hunks")
+		gh.get_hunks(function(h)
+			second = h
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "second get_hunks")
+
+		assert.same({}, first)
+		assert.same({}, second)
+		assert.equals(1, diff_calls())
+
+		gh.clear_hunks()
+		local third
+		gh.get_hunks(function(h)
+			third = h
+		end)
+		wait_for(function()
+			return third ~= nil
+		end, "get_hunks after clear")
+		assert.equals(2, diff_calls())
+	end)
+
+	it("coalesces two callers arriving before the fetch completes", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout_file = FIXTURES .. "/review_threads.json" },
+		})
+
+		local a, b
+		gh.get_comments(function(c)
+			a = c
+		end)
+		gh.get_comments(function(c)
+			b = c
+		end)
+		wait_for(function()
+			return a ~= nil and b ~= nil
+		end, "both callers settled")
+
+		assert.is_not_nil(a["lua/a.lua"])
+		assert.is_not_nil(b["lua/a.lua"])
+		local graphql = 0
+		for _, argv in ipairs(shim.calls("gh")) do
+			if table.concat(argv, " "):find("graphql", 1, true) then
+				graphql = graphql + 1
+			end
+		end
+		assert.equals(1, graphql)
+	end)
+
+	it("settles the caller with an error instead of hanging when the fetch fails", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, exit = 1, stderr = "rate limit exceeded" },
+		})
+
+		local value, err, called = nil, nil, false
+		gh.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "failed get_comments settles its caller")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		-- The failure must NOT be cached as a successful empty result.
+		assert.same({}, gh.comments)
+	end)
+
+	it("clear() returns the fetch coordinator to cold so the next get_comments refetches", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "api", "graphql" }, stdout = '{"data":{"repository":{"pullRequest":{"reviewThreads":{"edges":[]}}}}}' },
+		})
+
+		local first
+		gh.get_comments(function(c)
+			first = c
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_comments")
+
+		-- clear() resets the cache fields directly rather than delegating to
+		-- clear_comments/clear_hunks, so it has to invalidate the coordinator
+		-- itself or the emptied cache stays "loaded" forever.
+		gh.clear()
+
+		local second
+		gh.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "get_comments after clear()")
+
+		local graphql = 0
+		for _, argv in ipairs(shim.calls("gh")) do
+			if table.concat(argv, " "):find("graphql", 1, true) then
+				graphql = graphql + 1
+			end
+		end
+		assert.equals(2, graphql)
+	end)
 end)

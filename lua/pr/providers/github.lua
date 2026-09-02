@@ -5,6 +5,7 @@
 local Job = require("plenary.job")
 local util = require("pr.util")
 local log = require("pr.log")
+local fetch_state = require("pr.fetch_state")
 local M = {}
 
 M.git_root = ""
@@ -19,6 +20,9 @@ M.comments = {}
 
 ---@type Hunks
 M.hunks = {}
+
+--- Lifecycle coordinator for this provider's read resources.
+M._fetch = fetch_state.new()
 
 ---@type table<string, PRSummary[]>
 M.pr_list = {}
@@ -457,20 +461,26 @@ end
 ---
 ---@param callback function?(comments: Comments)
 function M.get_comments(callback)
-	callback = callback or function(_) end
+	callback = callback or function(_, _) end
 
-	if next(M.comments) then
+	local action, token = M._fetch:begin("comments", callback)
+	if action == "loaded" then
 		callback(M.comments)
+		return
+	end
+	if action == "joined" then
 		return
 	end
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
 			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
+			M._fetch:reject("comments", token, {}, "no repo info")
 			return
 		end
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
 			if not pr_number then
+				M._fetch:reject("comments", token, {}, "no PR number")
 				return
 			end
 
@@ -554,6 +564,7 @@ function M.get_comments(callback)
 				on_exit = vim.schedule_wrap(function(j, return_val)
 					if return_val ~= 0 then
 						log.command_failed("GitHub review-thread fetch", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
+						M._fetch:reject("comments", token, {}, "review-thread fetch failed")
 						return
 					end
 
@@ -561,6 +572,7 @@ function M.get_comments(callback)
 					local _, t = next(result_json)
 					if not t then
 						vim.notify("No result from gh api graphql command. Is a gh cli installed?")
+						M._fetch:reject("comments", token, {}, "empty graphql response")
 						return
 					end
 
@@ -568,12 +580,16 @@ function M.get_comments(callback)
 					local comments, thread_count, unsolved_count = M._normalize_comments(data)
 					if not comments then
 						vim.notify("Unexpected GraphQL response structure.")
+						M._fetch:reject("comments", token, {}, "unexpected graphql response")
 						return
 					end
 
+					if not M._fetch:owns("comments", token) then
+						return
+					end
 					M.comments = comments
 					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-					callback(comments)
+					M._fetch:resolve("comments", token, comments)
 				end),
 			}):start()
 		end))
@@ -645,21 +661,27 @@ end
 ---
 ---@param callback function?(hunks: Hunks)
 function M.get_hunks(callback)
-	callback = callback or function(_) end
+	callback = callback or function(_, _) end
 
-	if next(M.hunks) then
+	local action, token = M._fetch:begin("hunks", callback)
+	if action == "loaded" then
 		callback(M.hunks)
+		return
+	end
+	if action == "joined" then
 		return
 	end
 
 	M.get_repo_info(vim.schedule_wrap(function(owner, repo)
 		if not repo and not owner then
 			vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
+			M._fetch:reject("hunks", token, {}, "no repo info")
 			return
 		end
 
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
 			if not pr_number then
+				M._fetch:reject("hunks", token, {}, "no PR number")
 				return
 			end
 
@@ -669,23 +691,27 @@ function M.get_hunks(callback)
 					"pr",
 					"diff",
 				},
-				on_exit = function(j, return_val)
+				on_exit = vim.schedule_wrap(function(j, return_val)
 					if return_val ~= 0 then
 						vim.notify("Error running gh pr diff command. Is a gh cli installed?")
+						M._fetch:reject("hunks", token, {}, "pr diff command failed")
 						return
 					end
 
 					local diff_lines = j:result()
 					local _, t = next(diff_lines)
+					-- An exit-0 `gh pr diff` with no output is an empty diff, not a
+					-- failure, so this notifies but still settles as a cached result.
 					if not t then
 						vim.notify("No result from gh pr diff command. Is a gh cli installed?")
-						return
 					end
 
+					if not M._fetch:owns("hunks", token) then
+						return
+					end
 					M.hunks = util.parse_diff_hunks(diff_lines)
-
-					callback(M.hunks)
-				end,
+					M._fetch:resolve("hunks", token, M.hunks)
+				end),
 			}):start()
 		end))
 	end))
@@ -1730,14 +1756,20 @@ function M.clear()
 	M.pending_review_id = nil
 	M.collaborators = nil
 	M.issues = nil
+	-- The cache fields are reset inline above rather than through the
+	-- fine-grained clears, so the coordinator has to be returned to cold here
+	-- or a "loaded" resource would replay the emptied cache forever.
+	M._fetch:invalidate_all({}, "provider cleared")
 end
 
 function M.clear_comments()
 	M.comments = {}
+	M._fetch:invalidate("comments", {}, "comments cleared")
 end
 
 function M.clear_hunks()
 	M.hunks = {}
+	M._fetch:invalidate("hunks", {}, "hunks cleared")
 end
 
 function M.clear_pr_number()
