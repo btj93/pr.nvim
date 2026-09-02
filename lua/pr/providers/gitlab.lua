@@ -325,6 +325,28 @@ local function mr_url()
 	return project_url() .. "/merge_requests/" .. M.pr_number
 end
 
+-- `Job:new` validates `command` against `vim.fn.executable` and raises when the
+-- CLI is missing (plenary/job.lua:108), at construction rather than in
+-- `:start()`, and before any `on_exit` can run. Left unhandled inside a
+-- `fetch_state`-owned chain that raise settles nothing, so the resource stays
+-- "loading" and every later caller joins a waiter list that never drains.
+---@param operation string
+---@param spec table `Job:new` options (`command`, `args`, `on_exit`, ...)
+---@param on_spawn_error fun() Settles the caller the way a failed command does.
+local function start_job(operation, spec, on_spawn_error)
+	local ok, err = pcall(function()
+		Job:new(spec):start()
+	end)
+	if ok then
+		return
+	end
+	-- Strip Lua's "<chunk>:<line>: " prefix so the reported cause is the raise's
+	-- own message ("gh: Executable not found"), not a plenary source path.
+	local cause = tostring(err):match("^.-:%d+: (.*)$") or tostring(err)
+	log.command_failed(operation, spec.command, spec.args, cause, { hint = "Is a " .. spec.command .. " cli installed?" })
+	on_spawn_error()
+end
+
 local function run_glab(args, on_done)
 	Job:new({
 		command = "glab",
@@ -394,7 +416,7 @@ function M.get_git_user(callback)
 	end
 
 	local args = { "api", "/user", "--jq", ".username" }
-	Job:new({
+	start_job("GitLab user lookup", {
 		command = "glab",
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
@@ -416,7 +438,9 @@ function M.get_git_user(callback)
 			end
 			callback(M.git_user)
 		end),
-	}):start()
+	}, function()
+		callback(M.git_user)
+	end)
 end
 
 ---
@@ -428,9 +452,10 @@ function M.get_repo_info(callback)
 		return
 	end
 
-	Job:new({
+	local args = { "remote", "get-url", "origin" }
+	start_job("Git remote lookup", {
 		command = "git",
-		args = { "remote", "get-url", "origin" },
+		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
 				vim.api.nvim_echo({ { "Could not determine GitLab project from remote 'origin'.", "ErrorMsg" } }, true, {})
@@ -454,7 +479,9 @@ function M.get_repo_info(callback)
 			M.repo_info = { owner = owner, repo = repo, project_path = project_path }
 			callback(owner, repo)
 		end),
-	}):start()
+	}, function()
+		callback(nil, nil)
+	end)
 end
 
 ---
@@ -466,9 +493,10 @@ function M.get_pr_number(callback)
 		return
 	end
 
-	Job:new({
+	local args = { "mr", "view", "--json", "iid" }
+	start_job("GitLab MR-number lookup", {
 		command = "glab",
-		args = { "mr", "view", "--json", "iid" },
+		args = args,
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
 				vim.notify("No MR open for this branch")
@@ -487,7 +515,9 @@ function M.get_pr_number(callback)
 			M.pr_number = iid
 			callback(iid)
 		end),
-	}):start()
+	}, function()
+		callback(nil)
+	end)
 end
 
 ---
@@ -641,7 +671,7 @@ function M.get_comments(callback)
 					"query=" .. DISCUSSIONS_QUERY,
 				}
 
-				Job:new({
+				start_job("GitLab discussion fetch", {
 					command = "glab",
 					args = args,
 					on_exit = vim.schedule_wrap(function(j, code)
@@ -676,7 +706,9 @@ function M.get_comments(callback)
 						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
 						M._fetch:resolve("comments", token, comments)
 					end),
-				}):start()
+				}, function()
+					M._fetch:reject("comments", token, {}, "glab not available")
+				end)
 			end))
 		end))
 	end))
@@ -707,7 +739,7 @@ function M.get_hunks(callback)
 				return
 			end
 
-			Job:new({
+			start_job("GitLab MR diff", {
 				command = "glab",
 				args = { "mr", "diff" },
 				on_exit = vim.schedule_wrap(function(j, code)
@@ -730,7 +762,9 @@ function M.get_hunks(callback)
 					M.hunks = util.parse_diff_hunks(diff_lines)
 					M._fetch:resolve("hunks", token, M.hunks)
 				end),
-			}):start()
+			}, function()
+				M._fetch:reject("hunks", token, {}, "glab not available")
+			end)
 		end))
 	end))
 end

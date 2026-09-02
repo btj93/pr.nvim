@@ -320,6 +320,28 @@ function M._normalize_issues(raw)
 	return out
 end
 
+-- `Job:new` validates `command` against `vim.fn.executable` and raises when the
+-- CLI is missing (plenary/job.lua:108), at construction rather than in
+-- `:start()`, and before any `on_exit` can run. Left unhandled inside a
+-- `fetch_state`-owned chain that raise settles nothing, so the resource stays
+-- "loading" and every later caller joins a waiter list that never drains.
+---@param operation string
+---@param spec table `Job:new` options (`command`, `args`, `on_exit`, ...)
+---@param on_spawn_error fun() Settles the caller the way a failed command does.
+local function start_job(operation, spec, on_spawn_error)
+	local ok, err = pcall(function()
+		Job:new(spec):start()
+	end)
+	if ok then
+		return
+	end
+	-- Strip Lua's "<chunk>:<line>: " prefix so the reported cause is the raise's
+	-- own message ("gh: Executable not found"), not a plenary source path.
+	local cause = tostring(err):match("^.-:%d+: (.*)$") or tostring(err)
+	log.command_failed(operation, spec.command, spec.args, cause, { hint = "Is a " .. spec.command .. " cli installed?" })
+	on_spawn_error()
+end
+
 ---
 ---@param callback? fun(owner: string, repo: string)
 ---@return nil
@@ -330,9 +352,10 @@ function M.get_repo_info(callback)
 		return
 	end
 
-	Job:new({
+	local args = { "remote", "get-url", "origin" }
+	start_job("Git remote lookup", {
 		command = "git",
-		args = { "remote", "get-url", "origin" },
+		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
 				vim.api.nvim_echo({ { "Could not determine GitHub repository from remote 'origin'.", "ErrorMsg" } }, true, {})
@@ -361,7 +384,9 @@ function M.get_repo_info(callback)
 			end
 			callback(owner, repo)
 		end),
-	}):start()
+	}, function()
+		callback(nil, nil)
+	end)
 end
 
 -- Helper to get the current PR number
@@ -374,9 +399,10 @@ function M.get_pr_number(callback)
 		return
 	end
 
-	Job:new({
+	local args = { "pr", "view", "--json", "number", "--jq", ".number" }
+	start_job("GitHub PR-number lookup", {
 		command = "gh",
-		args = { "pr", "view", "--json", "number", "--jq", ".number" },
+		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
 				vim.notify("No PR open for this branch")
@@ -400,7 +426,9 @@ function M.get_pr_number(callback)
 			end
 			callback(pr_number)
 		end),
-	}):start()
+	}, function()
+		callback(nil)
+	end)
 end
 
 --- Resolve the PR's base-branch HEAD commit sha. Used by util.open_pr_file
@@ -562,7 +590,7 @@ function M.get_comments(callback)
 				"-f",
 				"query=" .. query_template,
 			}
-			Job:new({
+			start_job("GitHub review-thread fetch", {
 				command = "gh",
 				args = args,
 				on_exit = vim.schedule_wrap(function(j, return_val)
@@ -595,7 +623,9 @@ function M.get_comments(callback)
 					vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
 					M._fetch:resolve("comments", token, comments)
 				end),
-			}):start()
+			}, function()
+				M._fetch:reject("comments", token, {}, "gh not available")
+			end)
 		end))
 	end))
 end
@@ -640,7 +670,7 @@ function M.get_git_user(callback)
 	end
 
 	local args = { "api", "user", "-q", ".login" }
-	Job:new({
+	start_job("GitHub user lookup", {
 		command = "gh",
 		args = args,
 		on_exit = vim.schedule_wrap(function(j, return_val)
@@ -659,7 +689,9 @@ function M.get_git_user(callback)
 
 			callback(M.git_user)
 		end),
-	}):start()
+	}, function()
+		callback(M.git_user)
+	end)
 end
 
 ---
@@ -688,7 +720,7 @@ function M.get_hunks(callback)
 				return
 			end
 
-			Job:new({
+			start_job("GitHub PR diff", {
 				command = "gh",
 				args = {
 					"pr",
@@ -715,7 +747,9 @@ function M.get_hunks(callback)
 					M.hunks = util.parse_diff_hunks(diff_lines)
 					M._fetch:resolve("hunks", token, M.hunks)
 				end),
-			}):start()
+			}, function()
+				M._fetch:reject("hunks", token, {}, "gh not available")
+			end)
 		end))
 	end))
 end

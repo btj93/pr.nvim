@@ -789,4 +789,62 @@ diff --git a/src/foo.lua b/src/foo.lua
 		assert.equals("loaded", glab._fetch:status("comments"))
 		assert.equals(1, #calls_with("glab", "graphql"))
 	end)
+
+	-- Point PATH at a directory holding nothing but `git`, so the provider CLI is
+	-- genuinely absent and plenary's `Job:new` executable check fires. git is
+	-- still never shimmed: the entry is a symlink to the real binary.
+	local function hide_provider_cli()
+		local dir = vim.fn.tempname()
+		vim.fn.mkdir(dir, "p")
+		local git_exe = vim.fn.exepath("git")
+		assert(git_exe ~= "", "git must be on PATH for this spec")
+		local uv = vim.uv or vim.loop
+		uv.fs_symlink(git_exe, dir .. "/git")
+		local saved = vim.env.PATH
+		vim.env.PATH = dir
+		return function()
+			vim.env.PATH = saved
+			vim.fn.delete(dir, "rf")
+		end
+	end
+
+	-- A raising `Job:new` inside a fetch_state-owned chain used to settle
+	-- nothing, so the resource stayed "loading" forever and every later caller
+	-- joined a waiter list that never drained. Drive one such chain with the CLI
+	-- absent: the caller must be settled, the raise must not escape the entry
+	-- call, and the resource must be retryable rather than joined.
+	local function assert_missing_cli_settles(resource, start_fetch)
+		local restore = hide_provider_cli()
+		local settled, err_seen = 0, nil
+		local function run()
+			start_fetch(function(_, err)
+				settled = settled + 1
+				err_seen = err
+			end)
+			wait_for(function()
+				return settled > 0
+			end, resource .. " settles with glab missing")
+		end
+		local pcall_ok, pcall_err = pcall(run)
+		restore()
+		assert(pcall_ok, pcall_err)
+
+		assert.equals(1, settled)
+		assert.is_not_nil(err_seen)
+		assert.equals("error", glab._fetch:status(resource))
+		assert.equals("start", (glab._fetch:begin(resource, nil)))
+
+		local named = vim.tbl_filter(function(msg)
+			return msg:find("glab: Executable not found", 1, true) ~= nil
+		end, notify_msgs())
+		assert(#named > 0, "expected a notification naming the missing CLI, got: " .. vim.inspect(notify_msgs()))
+	end
+
+	it("get_comments settles and stays retryable when glab is not installed", function()
+		assert_missing_cli_settles("comments", glab.get_comments)
+	end)
+
+	it("get_hunks settles and stays retryable when glab is not installed", function()
+		assert_missing_cli_settles("hunks", glab.get_hunks)
+	end)
 end)
