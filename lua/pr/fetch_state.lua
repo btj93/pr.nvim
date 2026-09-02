@@ -107,7 +107,10 @@ end
 --- waiter that re-enters `begin` queues onto the next cycle instead of the list
 --- under the loop, and each call is isolated so one waiter raising cannot
 --- strand the callers behind it, who are already dequeued and would otherwise
---- never be settled and never retry.
+--- never be settled and never retry. Reporting that failure is isolated the
+--- same way: a user `vim.notify` wrapper (noice.nvim, nvim-notify) that raises
+--- would otherwise abort the loop on the reporting path and strand exactly the
+--- waiters the `pcall` above exists to protect.
 ---@param name string
 ---@param e pr.FetchStateEntry
 ---@param value any
@@ -118,7 +121,9 @@ local function drain(name, e, value, err)
 	for _, cb in ipairs(waiters) do
 		local ok, failure = pcall(cb, value, err)
 		if not ok then
-			vim.notify(("pr.fetch_state: a %s waiter errored: %s"):format(name, tostring(failure)), vim.log.levels.ERROR)
+			pcall(function()
+				vim.notify(("pr.fetch_state: a %s waiter errored: %s"):format(name, tostring(failure)), vim.log.levels.ERROR)
+			end)
 		end
 	end
 end

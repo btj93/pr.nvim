@@ -152,6 +152,37 @@ describe("pr.fetch_state", function()
 		assert.is_not_nil(notified[1].msg:find("waiter one blew up", 1, true))
 	end)
 
+	it("still settles the queue when the user's vim.notify wrapper raises on the reporting path", function()
+		local notify_calls = 0
+		local original_notify = vim.notify
+		vim.notify = function()
+			notify_calls = notify_calls + 1
+			error("notify wrapper blew up")
+		end
+
+		local second, third
+		local _, token = co:begin("comments", function()
+			error("waiter one blew up")
+		end)
+		co:begin("comments", function(v)
+			second = v
+		end)
+		co:begin("comments", function(v)
+			third = v
+		end)
+
+		local ok = pcall(co.resolve, co, "comments", token, { a = 1 })
+		vim.notify = original_notify
+
+		assert.is_true(ok)
+		assert.same({ a = 1 }, second)
+		assert.same({ a = 1 }, third)
+		-- The raising wrapper was still reached, so the guard is what saved the
+		-- queue rather than the reporting path being skipped.
+		assert.equals(1, notify_calls)
+		assert.equals("loaded", co:status("comments"))
+	end)
+
 	it("settles in-flight waiters when the resource is invalidated mid-fetch", function()
 		local value, err
 		local _, token = co:begin("comments", function(v, e)
