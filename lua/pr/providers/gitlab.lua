@@ -2,6 +2,7 @@ local Job = require("plenary.job")
 local util = require("pr.util")
 local local_review = require("pr.review_local")
 local log = require("pr.log")
+local fetch_state = require("pr.fetch_state")
 local M = {}
 
 M.git_root = ""
@@ -29,6 +30,11 @@ M.diff_refs = nil
 M.comments = {}
 ---@type Hunks
 M.hunks = {}
+
+--- Lifecycle coordinator for this provider's read resources.
+---@type pr.FetchState
+M._fetch = fetch_state.new()
+
 ---@type table<string, PRSummary[]>
 M.pr_list = {}
 ---@type PRMetadata?
@@ -394,6 +400,10 @@ function M.get_git_user(callback)
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
 				log.command_failed("GitLab user lookup", "glab", args, j:stderr_result(), { hint = "Is a glab cli installed?", code = code })
+				-- `get_comments` front-loads this getter, so returning without a
+				-- callback strands its whole chain. `M.git_user` is still "" here,
+				-- which is what the `not t` branch below hands back.
+				callback(M.git_user)
 				return
 			end
 			local result = j:result()
@@ -424,18 +434,21 @@ function M.get_repo_info(callback)
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
 				vim.api.nvim_echo({ { "Could not determine GitLab project from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			local result = j:result()
 			local _, t = next(result)
 			if not t then
 				vim.api.nvim_echo({ { "Could not determine GitLab project from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			local url = trim(t)
 			local owner, repo, project_path = M._parse_remote_url(url)
 			if not project_path then
 				vim.api.nvim_echo({ { "Could not determine GitLab project from remote 'origin'.", "ErrorMsg" } }, true, {})
+				callback(nil, nil)
 				return
 			end
 			M.repo_info = { owner = owner, repo = repo, project_path = project_path }
@@ -459,6 +472,7 @@ function M.get_pr_number(callback)
 		on_exit = vim.schedule_wrap(function(j, code)
 			if code ~= 0 then
 				vim.notify("No MR open for this branch")
+				callback(nil)
 				return
 			end
 			local result = j:result()
@@ -466,6 +480,7 @@ function M.get_pr_number(callback)
 			local ok, data = pcall(vim.json.decode, body)
 			if not ok or type(data) ~= "table" or not data.iid then
 				vim.notify("Could not get MR number. Is a glab cli installed?")
+				callback(nil)
 				return
 			end
 			local iid = tonumber(data.iid) or data.iid
@@ -590,10 +605,14 @@ query($fullPath: ID!, $iid: String!) {
 ---
 ---@param callback? fun(comments: Comments)
 function M.get_comments(callback)
-	callback = callback or function(_) end
+	callback = callback or function(_, _) end
 
-	if next(M.comments) then
+	local action, token = M._fetch:begin("comments", callback)
+	if action == "loaded" then
 		callback(M.comments)
+		return
+	end
+	if action == "joined" then
 		return
 	end
 
@@ -602,10 +621,12 @@ function M.get_comments(callback)
 	M.get_git_user(vim.schedule_wrap(function(_)
 		M.get_repo_info(vim.schedule_wrap(function()
 			if not M.repo_info.project_path then
+				M._fetch:reject("comments", token, {}, "no repo info")
 				return
 			end
 			M.get_pr_number(vim.schedule_wrap(function(pr_number)
 				if not pr_number then
+					M._fetch:reject("comments", token, {}, "no MR number")
 					return
 				end
 
@@ -626,6 +647,7 @@ function M.get_comments(callback)
 					on_exit = vim.schedule_wrap(function(j, code)
 						if code ~= 0 then
 							log.command_failed("GitLab discussion fetch", "glab", args, j:stderr_result(), { hint = "Is a glab cli installed?", code = code })
+							M._fetch:reject("comments", token, {}, "discussion fetch failed")
 							return
 						end
 
@@ -633,22 +655,26 @@ function M.get_comments(callback)
 						local ok, data = pcall(vim.json.decode, body)
 						if not ok then
 							vim.notify("Unexpected GraphQL response structure.")
+							M._fetch:reject("comments", token, {}, "undecodable graphql response")
 							return
 						end
 
 						local comments, thread_count, unsolved_count, diff_refs = M._normalize_comments(data, M.git_user)
 						if not comments then
 							vim.notify("Unexpected GraphQL response structure.")
+							M._fetch:reject("comments", token, {}, "unexpected graphql response")
 							return
 						end
 
+						if not M._fetch:owns("comments", token) then
+							return
+						end
 						if diff_refs then
 							M.diff_refs = diff_refs
 						end
-
 						M.comments = comments
 						vim.notify("You have " .. thread_count .. "(" .. unsolved_count .. ")" .. " comment threads")
-						callback(comments)
+						M._fetch:resolve("comments", token, comments)
 					end),
 				}):start()
 			end))
@@ -659,19 +685,25 @@ end
 ---
 ---@param callback? fun(hunks: Hunks)
 function M.get_hunks(callback)
-	callback = callback or function(_) end
+	callback = callback or function(_, _) end
 
-	if next(M.hunks) then
+	local action, token = M._fetch:begin("hunks", callback)
+	if action == "loaded" then
 		callback(M.hunks)
+		return
+	end
+	if action == "joined" then
 		return
 	end
 
 	M.get_repo_info(vim.schedule_wrap(function()
 		if not M.repo_info.project_path then
+			M._fetch:reject("hunks", token, {}, "no repo info")
 			return
 		end
 		M.get_pr_number(vim.schedule_wrap(function(pr_number)
 			if not pr_number then
+				M._fetch:reject("hunks", token, {}, "no MR number")
 				return
 			end
 
@@ -681,16 +713,22 @@ function M.get_hunks(callback)
 				on_exit = vim.schedule_wrap(function(j, code)
 					if code ~= 0 then
 						vim.notify("Error running glab mr diff command. Is a glab cli installed?")
+						M._fetch:reject("hunks", token, {}, "mr diff command failed")
 						return
 					end
 					local diff_lines = j:result()
+					-- An exit-0 `glab mr diff` with no output is an empty diff, not a
+					-- failure, so this notifies but still settles as a cached result.
 					if not diff_lines or #diff_lines == 0 then
-						vim.notify("No result from glab mr diff command. Is a glab cli installed?")
-						return
+						vim.notify("glab mr diff returned no output: this MR has an empty diff.")
+						diff_lines = {}
 					end
 
+					if not M._fetch:owns("hunks", token) then
+						return
+					end
 					M.hunks = util.parse_diff_hunks(diff_lines)
-					callback(M.hunks)
+					M._fetch:resolve("hunks", token, M.hunks)
 				end),
 			}):start()
 		end))
@@ -1113,14 +1151,20 @@ function M.clear()
 	M.pending_review_id = nil
 	M.collaborators = nil
 	M.issues = nil
+	-- The cache fields are reset inline above rather than through the
+	-- fine-grained clears, so the coordinator has to be returned to cold here
+	-- or a "loaded" resource would replay the emptied cache forever.
+	M._fetch:invalidate_all({}, "provider cleared")
 end
 
 function M.clear_comments()
 	M.comments = {}
+	M._fetch:invalidate("comments", {}, "comments cleared")
 end
 
 function M.clear_hunks()
 	M.hunks = {}
+	M._fetch:invalidate("hunks", {}, "hunks cleared")
 end
 
 function M.clear_pr_number()

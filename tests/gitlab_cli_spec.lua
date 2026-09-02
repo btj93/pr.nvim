@@ -310,9 +310,8 @@ describe("gitlab provider through real CLI plumbing", function()
 			},
 		})
 
-		-- get_comments' failure branch returns WITHOUT invoking the callback
-		-- (gitlab.lua:629), mirroring github; so wait on the notification rather
-		-- than a callback that never fires.
+		-- The redaction contract is what this pins, so wait on the notification
+		-- rather than the (now settled) callback.
 		glab.get_comments(function() end)
 		wait_for(function()
 			for _, m in ipairs(notify_msgs()) do
@@ -408,5 +407,386 @@ describe("gitlab provider through real CLI plumbing", function()
 		end, "second get_comments after clear")
 		-- git_user + iid stay cached, so only the graphql query re-fires: 1 -> 2.
 		assert.equals(2, #calls_with("glab", "graphql"))
+	end)
+
+	-- Lifecycle: gitlab's read getters short-circuited on `next(M.comments)` /
+	-- `next(M.hunks)`, so an MR with no discussions and an MR with an empty diff
+	-- both refetched on every call, concurrent callers each started their own
+	-- subprocess chain, and a failed fetch never settled its caller at all.
+	local EMPTY_GRAPHQL = {
+		match = { "api", "graphql" },
+		stdout = '{"data":{"project":{"mergeRequest":{"discussions":{"nodes":[]}}}}}',
+	}
+
+	it("caches an empty comments result instead of refetching", function()
+		shim.stub("glab", { MR_VIEW_IID, API_USER, EMPTY_GRAPHQL })
+
+		local first, second
+		glab.get_comments(function(c)
+			first = c
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_comments")
+		glab.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "second get_comments")
+
+		assert.same({}, first)
+		assert.same({}, second)
+		-- Cached: an empty result that refetched would issue a second graphql call.
+		assert.equals(1, #calls_with("glab", "graphql"))
+
+		-- ...and invalidation makes the NEXT call fetch again.
+		glab.clear_comments()
+		local third
+		glab.get_comments(function(c)
+			third = c
+		end)
+		wait_for(function()
+			return third ~= nil
+		end, "get_comments after clear_comments")
+		assert.same({}, third)
+		assert.equals(2, #calls_with("glab", "graphql"))
+	end)
+
+	it("caches an empty hunks result and refetches after invalidation", function()
+		-- An exit-0 `glab mr diff` with no output is an MR whose diff is empty,
+		-- not a failure.
+		shim.stub("glab", { MR_VIEW_IID, { match = { "mr", "diff" }, stdout = "" } })
+
+		local first, second
+		glab.get_hunks(function(h)
+			first = h
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_hunks")
+		glab.get_hunks(function(h)
+			second = h
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "second get_hunks")
+
+		assert.same({}, first)
+		assert.same({}, second)
+		assert.equals(1, #calls_with("glab", "diff"))
+
+		glab.clear_hunks()
+		local third
+		glab.get_hunks(function(h)
+			third = h
+		end)
+		wait_for(function()
+			return third ~= nil
+		end, "get_hunks after clear_hunks")
+		assert.same({}, third)
+		assert.equals(2, #calls_with("glab", "diff"))
+	end)
+
+	it("coalesces two callers arriving before the fetch completes", function()
+		shim.stub("glab", { MR_VIEW_IID, API_USER, API_GRAPHQL })
+
+		local a, b
+		glab.get_comments(function(c)
+			a = c
+		end)
+		glab.get_comments(function(c)
+			b = c
+		end)
+		wait_for(function()
+			return a ~= nil and b ~= nil
+		end, "both callers settled")
+
+		assert.is_not_nil(a["src/foo.lua"])
+		assert.is_not_nil(b["src/foo.lua"])
+		-- One chain, not two: the second caller joined the first fetch.
+		assert.equals(1, #calls_with("glab", "graphql"))
+	end)
+
+	it("settles the caller with an error instead of hanging when the fetch fails", function()
+		shim.stub("glab", {
+			MR_VIEW_IID,
+			API_USER,
+			{ match = { "api", "graphql" }, exit = 1, stderr = "GraphQL: 429 Too Many Requests" },
+		})
+
+		local value, err, called = nil, nil, false
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "failed get_comments settles its caller")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		-- The failure must NOT be cached as a successful empty result.
+		assert.same({}, glab.comments)
+		assert.equals("error", glab._fetch:status("comments"))
+	end)
+
+	it("clear() returns the fetch coordinator to cold so the next get_comments refetches", function()
+		shim.stub("glab", { MR_VIEW_IID, API_USER, EMPTY_GRAPHQL })
+
+		local first
+		glab.get_comments(function(c)
+			first = c
+		end)
+		wait_for(function()
+			return first ~= nil
+		end, "first get_comments")
+
+		-- clear() resets the cache fields inline rather than delegating to
+		-- clear_comments/clear_hunks, so it has to invalidate the coordinator
+		-- itself or the emptied cache stays "loaded" forever.
+		glab.clear()
+
+		local second
+		glab.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "get_comments after clear()")
+		assert.equals(2, #calls_with("glab", "graphql"))
+	end)
+
+	-- Each reject and owns site gets its own pin. `glab mr view` exiting
+	-- non-zero and a missing origin remote are the two ways the prelude getters
+	-- fail; before they settled their own callbacks the resource stayed
+	-- "loading" forever and every later caller joined a waiter list nothing
+	-- would drain.
+	local MR_DIFF = { match = { "mr", "diff" }, stdout = [[
+diff --git a/src/foo.lua b/src/foo.lua
+@@ -1,2 +1,3 @@
+ line 1
++added
+ line 2
+]] }
+
+	it("get_comments settles and stays retryable when glab mr view fails", function()
+		shim.stub("glab", { API_USER, { match = { "mr", "view" }, exit = 1 } })
+
+		local value, err, called
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on a failed glab mr view")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", glab._fetch:status("comments"))
+		assert.equals(0, #calls_with("glab", "graphql"))
+
+		-- Retryable, not wedged: once the MR resolves, the next caller fetches.
+		shim.stub("glab", { MR_VIEW_IID, API_USER, EMPTY_GRAPHQL })
+		local second
+		glab.get_comments(function(c)
+			second = c
+		end)
+		wait_for(function()
+			return second ~= nil
+		end, "get_comments after the failure")
+		assert.same({}, second)
+		assert.equals(1, #calls_with("glab", "graphql"))
+	end)
+
+	it("get_comments settles when the origin remote is gone", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("glab", { MR_VIEW_IID, API_USER, EMPTY_GRAPHQL })
+
+		local value, err, called
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles without repo info")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, #calls_with("glab", "graphql"))
+	end)
+
+	it("get_comments settles on an undecodable graphql response", function()
+		shim.stub("glab", {
+			MR_VIEW_IID,
+			API_USER,
+			{ match = { "api", "graphql" }, stdout = "<html>502 Bad Gateway</html>\n" },
+		})
+
+		local value, err, called
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on an undecodable response")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", glab._fetch:status("comments"))
+	end)
+
+	it("get_comments settles on an unexpected graphql structure", function()
+		shim.stub("glab", {
+			MR_VIEW_IID,
+			API_USER,
+			{ match = { "api", "graphql" }, stdout = '{"data":{}}' },
+		})
+
+		local value, err, called
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on an unexpected structure")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals("error", glab._fetch:status("comments"))
+	end)
+
+	it("get_hunks settles with an error when glab mr diff fails", function()
+		shim.stub("glab", { MR_VIEW_IID, { match = { "mr", "diff" }, exit = 1 } })
+
+		local value, err, called
+		glab.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "failed get_hunks settles its caller")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.same({}, glab.hunks)
+		assert.equals("error", glab._fetch:status("hunks"))
+
+		-- A failure is not cached as success: the next caller runs `glab mr diff`
+		-- again instead of replaying an empty result.
+		shim.stub("glab", { MR_VIEW_IID, MR_DIFF })
+		local second
+		glab.get_hunks(function(h)
+			second = h
+		end)
+		wait_for(function()
+			return second ~= nil and next(second) ~= nil
+		end, "get_hunks after the failure")
+		assert.equals(2, #calls_with("glab", "diff"))
+	end)
+
+	it("get_hunks settles when glab mr view fails", function()
+		shim.stub("glab", { { match = { "mr", "view" }, exit = 1 }, MR_DIFF })
+
+		local value, err, called
+		glab.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_hunks settles on a failed glab mr view")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, #calls_with("glab", "diff"))
+	end)
+
+	it("get_hunks settles when the origin remote is gone", function()
+		repo.git("remote", "remove", "origin")
+		shim.stub("glab", { MR_VIEW_IID, MR_DIFF })
+
+		local value, err, called
+		glab.get_hunks(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_hunks settles without repo info")
+
+		assert.same({}, value)
+		assert.is_not_nil(err)
+		assert.equals(0, #calls_with("glab", "diff"))
+	end)
+
+	it("a comments fetch invalidated mid-flight never publishes into the cache", function()
+		shim.stub("glab", { MR_VIEW_IID, API_USER, API_GRAPHQL })
+
+		local err, called
+		glab.get_comments(function(_, e)
+			err, called = e, true
+		end)
+		-- The chain is still on its first subprocess here, so this retires the
+		-- token the in-flight completion is holding.
+		glab.clear_comments()
+		assert.is_true(called, "invalidate settles the waiting caller")
+		assert.is_not_nil(err)
+
+		wait_for(function()
+			return #calls_with("glab", "graphql") == 1
+		end, "the retired fetch still ran to completion")
+		vim.wait(500, function()
+			return false
+		end)
+
+		-- The completion lost its token, so the fixture's threads (and the
+		-- diff_refs it carries) must not have landed in a just-emptied cache.
+		assert.same({}, glab.comments)
+		assert.is_nil(glab.diff_refs)
+		assert.equals("cold", glab._fetch:status("comments"))
+	end)
+
+	it("a hunks fetch invalidated mid-flight never publishes into the cache", function()
+		shim.stub("glab", { MR_VIEW_IID, MR_DIFF })
+
+		local err, called
+		glab.get_hunks(function(_, e)
+			err, called = e, true
+		end)
+		glab.clear_hunks()
+		assert.is_true(called, "invalidate settles the waiting caller")
+		assert.is_not_nil(err)
+
+		wait_for(function()
+			return #calls_with("glab", "diff") == 1
+		end, "the retired fetch still ran to completion")
+		vim.wait(500, function()
+			return false
+		end)
+
+		assert.same({}, glab.hunks)
+		assert.equals("cold", glab._fetch:status("hunks"))
+	end)
+
+	it("get_comments settles when the glab user lookup fails", function()
+		-- gitlab is the one provider whose get_comments front-loads get_git_user,
+		-- so an unauthenticated `glab` wedged the whole chain before that failure
+		-- branch settled its callback.
+		shim.stub("glab", { MR_VIEW_IID, { match = { "api", "/user" }, exit = 1 }, EMPTY_GRAPHQL })
+
+		local value, err, called
+		glab.get_comments(function(v, e)
+			value, err, called = v, e, true
+		end)
+		wait_for(function()
+			return called
+		end, "get_comments settles on a failed user lookup")
+
+		-- A user lookup is not load-bearing for the fetch itself: it only feeds
+		-- viewer_did_author. So the chain runs on and resolves, it just resolves
+		-- with an unknown viewer.
+		assert.same({}, value)
+		assert.is_nil(err)
+		assert.equals("", glab.git_user)
+		assert.equals("loaded", glab._fetch:status("comments"))
+		assert.equals(1, #calls_with("glab", "graphql"))
 	end)
 end)
