@@ -1177,6 +1177,42 @@ describe("github provider through real CLI plumbing", function()
 		assert.equals(0, gh_calls_matching("--method"))
 	end)
 
+	-- `gh` installed but exiting non-zero is the unauthenticated fresh install,
+	-- and it used to abort `comment.start` outright: `get_git_user` logged the
+	-- failure and returned without calling back, so the nested `get_hunks` /
+	-- `get_comments` never ran and both resources stayed cold. Drive the same
+	-- chain shape here; the empty `M.git_user` is what the contract allows.
+	it("get_git_user settles on a non-zero exit so the bootstrap chain proceeds", function()
+		shim.stub("gh", {
+			PR_VIEW_NUMBER,
+			{ match = { "pr", "diff" }, stdout_file = FIXTURES .. "/pr_diff.txt" },
+			-- Ordered before the `api user` route: the graphql query body contains
+			-- the substring "user", so a bare { "api", "user" } would match it too.
+			{ match = { "api", "graphql" }, stdout_file = FIXTURES .. "/review_threads.json" },
+			{ match = { "api", "user" }, exit = 1, stderr = "gh: not authenticated" },
+		})
+
+		local user_seen, hunks, comments
+		gh.get_git_user(vim.schedule_wrap(function(u)
+			user_seen = u
+			gh.get_hunks(vim.schedule_wrap(function(h)
+				hunks = h
+				gh.get_comments(vim.schedule_wrap(function(c)
+					comments = c
+				end))
+			end))
+		end))
+		wait_for(function()
+			return comments ~= nil
+		end, "bootstrap chain reaches get_comments with gh api user failing")
+
+		assert.equals("", user_seen)
+		assert.is_not_nil(hunks["lua/a.lua"])
+		assert.is_not_nil(comments["lua/a.lua"])
+		assert.equals("loaded", gh._fetch:status("hunks"))
+		assert.equals("loaded", gh._fetch:status("comments"))
+	end)
+
 	-- Point PATH at a directory holding nothing but `git`, so the provider CLI is
 	-- genuinely absent and plenary's `Job:new` executable check fires. git is
 	-- still never shimmed: the entry is a symlink to the real binary.

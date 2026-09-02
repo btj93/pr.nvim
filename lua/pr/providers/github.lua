@@ -654,6 +654,11 @@ function M.get_git_user(callback)
 		on_exit = vim.schedule_wrap(function(j, return_val)
 			if return_val ~= 0 then
 				log.command_failed("GitHub user lookup", "gh", args, j:stderr_result(), { hint = "Is a gh cli installed?", code = return_val })
+				-- `comment.start` front-loads this getter, so returning without a
+				-- callback aborts the whole bootstrap and leaves comments and hunks
+				-- cold. `M.git_user` is still "" here, which is what the `not t`
+				-- branch below hands back.
+				callback(M.git_user)
 				return
 			end
 			local result_json = j:result()
