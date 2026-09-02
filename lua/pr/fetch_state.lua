@@ -12,14 +12,33 @@
 
 local M = {}
 
+--- One resource's lifecycle record.
+---@class pr.FetchStateEntry
+---@field status "cold"|"loading"|"loaded"|"error"
+---@field generation integer Bumped whenever a fetch cycle ends without success, so old tokens stop matching.
+---@field waiters fun(value: any, err: string|nil)[]
+---@field error string|nil
+
+--- Ownership ticket for one fetch cycle of one resource. Opaque to providers:
+--- mint it from `begin`, hand it back to `owns`/`resolve`/`reject` unread.
+---@class pr.FetchToken
+---@field name string
+---@field generation integer
+
+--- Per-provider fetch lifecycle coordinator.
+---@class pr.FetchState
+---@field resources table<string, pr.FetchStateEntry>
 local Coordinator = {}
 Coordinator.__index = Coordinator
 
----@return table
+---@return pr.FetchState
 function M.new()
 	return setmetatable({ resources = {} }, Coordinator)
 end
 
+---@param self pr.FetchState
+---@param name string
+---@return pr.FetchStateEntry
 local function entry(self, name)
 	local e = self.resources[name]
 	if not e then
@@ -49,7 +68,7 @@ end
 --- token). A `nil` callback is legal: the caller just wants the action.
 ---@param name string
 ---@param callback fun(value: any, err: string|nil)|nil
----@return string action, table|nil token
+---@return string action, pr.FetchToken|nil token
 function Coordinator:begin(name, callback)
 	local e = entry(self, name)
 	if e.status == "loaded" then
@@ -64,37 +83,50 @@ function Coordinator:begin(name, callback)
 	-- cold, or error from a previous attempt: this caller owns the retry.
 	e.status = "loading"
 	e.error = nil
-	e.waiters = {}
 	if callback then
 		table.insert(e.waiters, callback)
 	end
-	return "start", { generation = e.generation }
+	return "start", { name = name, generation = e.generation }
 end
 
 --- True while `token` still owns the in-flight fetch for `name`. Providers use
 --- this to decide whether to publish into their own cache field: a completion
 --- that lost its token must not overwrite state a newer fetch or an
---- invalidation already replaced.
+--- invalidation already replaced. A token only ever owns the resource it was
+--- minted for, so a provider holding two live tokens in one closure cannot
+--- settle one resource with the other's token.
 ---@param name string
----@param token table|nil
+---@param token pr.FetchToken|nil
 ---@return boolean
 function Coordinator:owns(name, token)
 	local e = entry(self, name)
-	return token ~= nil and e.status == "loading" and token.generation == e.generation
+	return token ~= nil and token.name == name and e.status == "loading" and token.generation == e.generation
 end
 
-local function drain(e, value, err)
+--- Settle every queued waiter. The list is swapped out before iterating so a
+--- waiter that re-enters `begin` queues onto the next cycle instead of the list
+--- under the loop, and each call is isolated so one waiter raising cannot
+--- strand the callers behind it, who are already dequeued and would otherwise
+--- never be settled and never retry.
+---@param name string
+---@param e pr.FetchStateEntry
+---@param value any
+---@param err string|nil
+local function drain(name, e, value, err)
 	local waiters = e.waiters
 	e.waiters = {}
 	for _, cb in ipairs(waiters) do
-		cb(value, err)
+		local ok, failure = pcall(cb, value, err)
+		if not ok then
+			vim.notify(("pr.fetch_state: a %s waiter errored: %s"):format(name, tostring(failure)), vim.log.levels.ERROR)
+		end
 	end
 end
 
 --- Mark a successful fetch. An empty-but-successful value counts as loaded and
 --- will NOT be refetched until invalidated. Returns false for a stale token.
 ---@param name string
----@param token table|nil
+---@param token pr.FetchToken|nil
 ---@param value any
 ---@return boolean accepted
 function Coordinator:resolve(name, token, value)
@@ -104,14 +136,17 @@ function Coordinator:resolve(name, token, value)
 	local e = entry(self, name)
 	e.status = "loaded"
 	e.error = nil
-	drain(e, value)
+	drain(name, e, value)
 	return true
 end
 
 --- Mark a failed fetch. Waiters settle with `(fallback, err)`; the resource
 --- returns to a retryable state rather than caching the failure as success.
+--- Bumps the generation like `invalidate` does, so the failed fetch's token
+--- cannot settle the retry that follows it. The ownership check above still
+--- runs against the pre-bump generation.
 ---@param name string
----@param token table|nil
+---@param token pr.FetchToken|nil
 ---@param fallback any
 ---@param err string|nil
 ---@return boolean accepted
@@ -120,9 +155,10 @@ function Coordinator:reject(name, token, fallback, err)
 		return false
 	end
 	local e = entry(self, name)
+	e.generation = e.generation + 1
 	e.status = "error"
 	e.error = err
-	drain(e, fallback, err)
+	drain(name, e, fallback, err)
 	return true
 end
 
@@ -136,13 +172,19 @@ function Coordinator:invalidate(name, fallback, reason)
 	e.generation = e.generation + 1
 	e.status = "cold"
 	e.error = nil
-	drain(e, fallback, reason or "invalidated")
+	drain(name, e, fallback, reason or "invalidated")
 end
 
 ---@param fallback any
 ---@param reason string|nil
 function Coordinator:invalidate_all(fallback, reason)
+	-- Snapshot the keys first: a drained waiter may `begin` a resource that
+	-- does not exist yet, and inserting into a table mid-`pairs` is undefined.
+	local names = {}
 	for name, _ in pairs(self.resources) do
+		names[#names + 1] = name
+	end
+	for _, name in ipairs(names) do
 		self:invalidate(name, fallback, reason)
 	end
 end
